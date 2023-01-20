@@ -2,7 +2,7 @@
 name = "network-tables"
 version = "0.0.0"
 edition = "2021"
-description = ""
+description = "A implementation of WPI's Network Tables spec"
 license = "MIT"
 repository = "network-tables"
 
