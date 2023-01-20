@@ -1,0 +1,33 @@
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: build-bins
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  create-body:
+    runs-on: ubuntu-20.04
+    outputs:
+      body: ${{ steps.git-cliff.outputs.content }}
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - uses: orhun/git-cliff-action@v2
+        id: git-cliff
+        with:
+          args: --verbose --latest --strip header
+      - name: Create initial release
+        uses: softprops/action-gh-release@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          body: ${{ steps.git-cliff.outputs.content }}
+          tag_name: ${{ github.ref }}
+          name: ${{ github.ref_name }}
+      

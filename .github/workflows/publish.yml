@@ -1,0 +1,41 @@
+on: 
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version update type to preform'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - alpha
+          - beta
+          - rc
+          - release
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install latest rust
+        uses: actions-rs/toolchain@v1
+        with:
+            profile: minimal
+            toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-release
+        uses: taiki-e/install-action@v1
+        with:
+          tool: cargo-release
+      - run: |
+          git config user.email "github-actions@github.com"
+          git config user.name "github-actions"
+      # - name: Cargo Release motorx-core and bin
+      #   env:
+      #     CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_TOKEN }}
+      #   run: cargo release --allow-branch main -features tls,serde-config,logging --tag-name 'v{{version}}' -v -x ${{ inputs.version }}
