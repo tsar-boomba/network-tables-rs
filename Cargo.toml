@@ -4,7 +4,9 @@ version = "0.0.1"
 edition = "2021"
 description = "A implementation of WPI's Network Tables spec"
 license = "MIT"
-repository = "network-tables"
+repository = "https://github.com/tsar-boomba/network-tables-rs"
+homepage = "https://github.com/tsar-boomba/network-tables-rs"
+readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
