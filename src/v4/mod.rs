@@ -6,8 +6,8 @@ pub mod subscription;
 pub mod topic;
 
 pub use message_type::*;
-pub use subscription::*;
 pub use messages::*;
+pub use subscription::*;
 pub use topic::*;
 
 #[cfg(feature = "client-v4")]

@@ -9,3 +9,7 @@ A [WPI Network Tables](https://github.com/wpilibsuite/allwpilib/tree/main/ntcore
 ## Crate Features
 
 - `client-v4`: Enable the v4 client
+
+## Examples
+
+Check out `/examples` for some guidance on how to use this library

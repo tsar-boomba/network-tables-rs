@@ -10,7 +10,7 @@ use std::{
 
 use super::{
     Announce, InternalSub, MessageData, NTMessage, PublishProperties, PublishTopic, PublishedTopic,
-    SetProperties, Subscribe, Subscription, SubscriptionData, SubscriptionOptions, Type, Topic,
+    SetProperties, Subscribe, Subscription, SubscriptionData, SubscriptionOptions, Topic, Type,
 };
 use futures_util::{poll, SinkExt, StreamExt};
 use tokio::{
@@ -318,11 +318,11 @@ impl InnerClient {
     ) {
         if let Some(client_timestamp) = client_timestamp {
             let receive_time = self.client_time();
-            tracing::trace!("Received at: {receive_time}\nCient time: {client_timestamp}");
+            cfg_tracing! {tracing::trace!("Received at: {receive_time}\nCient time: {client_timestamp}");}
             let round_trip_time = receive_time - client_timestamp as u32;
-            tracing::trace!("ett: {round_trip_time}");
+            cfg_tracing! {tracing::trace!("ett: {round_trip_time}");}
             let server_time_at_receive = server_timestamp - round_trip_time.div(2) as u32;
-            tracing::trace!("Server time at receive: {server_time_at_receive}");
+            cfg_tracing! {tracing::trace!("Server time at receive: {server_time_at_receive}");}
             *self.server_time_offset.lock() = server_time_at_receive - receive_time;
         }
     }
@@ -496,7 +496,9 @@ impl Clone for Client {
 fn log_result<T, E: Display>(result: Result<T, E>) -> Result<T, E> {
     #[cfg(feature = "tracing")]
     match &result {
-        Err(err) => ::tracing::error!("{}", err),
+        Err(err) => {
+            tracing::error!("{}", err)
+        }
         _ => {}
     };
     result
@@ -504,7 +506,6 @@ fn log_result<T, E: Display>(result: Result<T, E>) -> Result<T, E> {
 
 /// Handles messages from the server
 async fn handle_message(client: Arc<InnerClient>, message: Message) {
-    tracing::trace!("Handling message");
     match message {
         Message::Text(message) => {
             // Either announce, unannounce, or properties
