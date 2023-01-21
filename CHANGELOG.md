@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+### Features
+
+- Impl Serdialize & Deserialize on MessageData
+
+## [0.0.2] - 2023-01-21
+
 ### Bug Fixes
 
 - Change publish_value* api to align with spec
