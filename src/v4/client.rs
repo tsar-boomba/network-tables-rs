@@ -37,6 +37,7 @@ struct InnerClient {
     server_time_offset: parking_lot::Mutex<u32>,
     sub_counter: parking_lot::Mutex<i32>,
     topic_counter: parking_lot::Mutex<i32>,
+    start_time: Instant,
 }
 
 impl Client {
@@ -76,6 +77,7 @@ impl Client {
             server_time_offset: parking_lot::Mutex::new(0),
             sub_counter: parking_lot::Mutex::new(0),
             topic_counter: parking_lot::Mutex::new(0),
+            start_time: Instant::now(),
         });
         inner.on_open(&mut *inner.socket.lock().await).await;
 
@@ -264,7 +266,9 @@ impl Client {
         topic: &PublishedTopic,
         value: &rmpv::Value,
     ) -> Result<(), crate::Error> {
-        self.inner.publish_value(topic.pubuid, topic.r#type, value).await
+        self.inner
+            .publish_value(topic.pubuid, topic.r#type, value)
+            .await
     }
 }
 
@@ -298,10 +302,7 @@ impl InnerClient {
 
     #[inline]
     pub(crate) fn client_time(&self) -> u32 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_micros() as u32
+        Instant::now().duration_since(self.start_time).as_micros() as u32
     }
 
     pub(crate) fn server_time(&self) -> u32 {
@@ -312,15 +313,15 @@ impl InnerClient {
     pub(crate) fn handle_new_timestamp(
         &self,
         server_timestamp: u32,
-        client_timestamp: Option<i32>,
+        client_timestamp: Option<i64>,
     ) {
         if let Some(client_timestamp) = client_timestamp {
             let receive_time = self.client_time();
-            cfg_tracing! {tracing::trace!("Received at: {receive_time}\nCient time: {client_timestamp}");}
+            // println!("Received at: {receive_time}\nCient time: {client_timestamp}");
             let round_trip_time = receive_time - client_timestamp as u32;
-            cfg_tracing! {tracing::trace!("ett: {round_trip_time}");}
+            // println!("server_time: {server_timestamp}\nrtt: {round_trip_time}");
             let server_time_at_receive = server_timestamp - round_trip_time.div(2) as u32;
-            cfg_tracing! {tracing::trace!("Server time at receive: {server_time_at_receive}");}
+            // println!("Server time at receive: {server_time_at_receive}");
             *self.server_time_offset.lock() = server_time_at_receive - receive_time;
         }
     }
@@ -634,10 +635,7 @@ async fn handle_message(client: Arc<InnerClient>, message: Message) {
                                 }
                             } else if id == -1 {
                                 // Timestamp update
-                                client.handle_new_timestamp(
-                                    timestamp_micros,
-                                    data.as_i64().map(|n| n as i32),
-                                );
+                                client.handle_new_timestamp(timestamp_micros, data.as_i64());
                             } else {
                                 // Invalid id
                                 cfg_tracing! {
