@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+### Bug Fixes
+
+- Timestamp panic
+
+## [0.0.3] - 2023-01-21
+
 ### Features
 
 - Impl Serdialize & Deserialize on MessageData
