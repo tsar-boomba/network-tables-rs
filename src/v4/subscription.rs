@@ -12,7 +12,7 @@ use super::{
     Topic, Type,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageData {
     pub topic_name: String,
     pub timestamp: u32,
