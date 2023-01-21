@@ -35,7 +35,6 @@ struct InnerClient {
     client_published_topics: Mutex<HashMap<i32, PublishedTopic>>,
     socket: tokio::sync::Mutex<WebSocket>,
     server_time_offset: parking_lot::Mutex<u32>,
-    start_time: Instant,
     sub_counter: parking_lot::Mutex<i32>,
     topic_counter: parking_lot::Mutex<i32>,
 }
@@ -75,9 +74,8 @@ impl Client {
             client_published_topics: Mutex::new(HashMap::new()),
             socket: Mutex::new(socket),
             server_time_offset: parking_lot::Mutex::new(0),
-            start_time: Instant::now(),
-            sub_counter: parking_lot::Mutex::new(1),
-            topic_counter: parking_lot::Mutex::new(1),
+            sub_counter: parking_lot::Mutex::new(0),
+            topic_counter: parking_lot::Mutex::new(0),
         });
         inner.on_open(&mut *inner.socket.lock().await).await;
 
@@ -251,22 +249,22 @@ impl Client {
 
     pub async fn publish_value_w_timestamp(
         &self,
-        topic: &Topic,
+        topic: &PublishedTopic,
         timestamp: u32,
         value: &rmpv::Value,
     ) -> Result<(), crate::Error> {
         self.inner
-            .publish_value_w_timestamp(topic, timestamp, value)
+            .publish_value_w_timestamp(topic.pubuid, topic.r#type, timestamp, value)
             .await
     }
 
     /// Value should match topic type
     pub async fn publish_value(
         &self,
-        topic: &Topic,
+        topic: &PublishedTopic,
         value: &rmpv::Value,
     ) -> Result<(), crate::Error> {
-        self.inner.publish_value(topic, value).await
+        self.inner.publish_value(topic.pubuid, topic.r#type, value).await
     }
 }
 
@@ -343,7 +341,8 @@ impl InnerClient {
 
     pub(crate) async fn publish_value_w_timestamp(
         &self,
-        topic: &Topic,
+        id: i32,
+        r#type: Type,
         timestamp: u32,
         value: &rmpv::Value,
     ) -> Result<(), crate::Error> {
@@ -352,9 +351,9 @@ impl InnerClient {
         // TODO: too lazy to handle these errors 😴
         rmp::encode::write_array_len(&mut buf, 4).unwrap();
         // Client side topic is guaranteed to have a uid
-        rmp::encode::write_i32(&mut buf, topic.pubuid.unwrap()).unwrap();
+        rmp::encode::write_i32(&mut buf, id).unwrap();
         rmp::encode::write_u32(&mut buf, timestamp).unwrap();
-        rmp::encode::write_i32(&mut buf, topic.r#type.as_u8() as i32).unwrap();
+        rmp::encode::write_i32(&mut buf, r#type.as_u8() as i32).unwrap();
         rmpv::encode::write_value(&mut buf, value).unwrap();
 
         self.send_message(Message::Binary(buf)).await
@@ -363,10 +362,11 @@ impl InnerClient {
     /// Value should match topic type
     pub(crate) async fn publish_value(
         &self,
-        topic: &Topic,
+        id: i32,
+        r#type: Type,
         value: &rmpv::Value,
     ) -> Result<(), crate::Error> {
-        self.publish_value_w_timestamp(topic, self.server_time(), value)
+        self.publish_value_w_timestamp(id, r#type, self.server_time(), value)
             .await
     }
 
@@ -381,7 +381,8 @@ impl InnerClient {
 
             log_result(
                 self.publish_value_w_timestamp(
-                    time_topic,
+                    time_topic.id,
+                    time_topic.r#type,
                     0,
                     &rmpv::Value::Integer(self.client_time().into()),
                 )
