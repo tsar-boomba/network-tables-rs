@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+### Bug Fixes
+
+- Change publish_value* api to align with spec
+
+### Miscellaneous Tasks
+
+- Fix release script
+
+## [0.0.1] - 2023-01-20
+
 ### Features
 
 - [**breaking**] Implement v4 client
