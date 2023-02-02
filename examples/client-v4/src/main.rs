@@ -13,7 +13,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut subscription = client
         .subscribe_w_options(
-            &["/"],
+            &[""],
             Some(SubscriptionOptions {
                 all: Some(true),
                 prefix: Some(true),

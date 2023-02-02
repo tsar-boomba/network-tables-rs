@@ -5,12 +5,13 @@ use std::{
     net::SocketAddr,
     ops::Div,
     sync::Arc,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use super::{
-    Announce, InternalSub, MessageData, NTMessage, PublishProperties, PublishTopic, PublishedTopic,
-    SetProperties, Subscribe, Subscription, SubscriptionData, SubscriptionOptions, Topic, Type,
+    Announce, Config, InternalSub, MessageData, NTMessage, PublishProperties, PublishTopic,
+    PublishedTopic, SetProperties, Subscribe, Subscription, SubscriptionData, SubscriptionOptions,
+    Topic, Type,
 };
 use futures_util::{poll, SinkExt, StreamExt};
 use tokio::{
@@ -37,16 +38,14 @@ struct InnerClient {
     server_time_offset: parking_lot::Mutex<u32>,
     sub_counter: parking_lot::Mutex<i32>,
     topic_counter: parking_lot::Mutex<i32>,
+    config: Config,
     start_time: Instant,
 }
 
 impl Client {
-    pub async fn new(server_addr: impl Into<SocketAddr>) -> Self {
-        Self::try_new(server_addr).await.unwrap()
-    }
-
-    pub async fn try_new(
+    pub async fn try_new_w_config(
         server_addr: impl Into<SocketAddr>,
+        config: Config,
     ) -> Result<Self, tokio_tungstenite::tungstenite::Error> {
         // Connect to server
         let server_addr = server_addr.into();
@@ -78,6 +77,7 @@ impl Client {
             sub_counter: parking_lot::Mutex::new(0),
             topic_counter: parking_lot::Mutex::new(0),
             start_time: Instant::now(),
+            config,
         });
         inner.on_open(&mut *inner.socket.lock().await).await;
 
@@ -126,6 +126,20 @@ impl Client {
         });
 
         Ok(Self { inner })
+    }
+
+    pub async fn try_new(
+        server_addr: impl Into<SocketAddr>,
+    ) -> Result<Self, tokio_tungstenite::tungstenite::Error> {
+        Self::try_new_w_config(server_addr, Config::default()).await
+    }
+
+    pub async fn new_w_config(server_addr: impl Into<SocketAddr>, config: Config) -> Self {
+        Self::try_new_w_config(server_addr, config).await.unwrap()
+    }
+
+    pub async fn new(server_addr: impl Into<SocketAddr>) -> Self {
+        Self::new_w_config(server_addr, Config::default()).await
     }
 
     pub fn server_addr(&self) -> SocketAddr {
@@ -553,13 +567,17 @@ async fn handle_message(client: Arc<InnerClient>, message: Message) {
                                 },
                             );
                         }
+
+                        // Call user provided on announce fn
+                        (client.config.on_announce)(announced.get(&id).unwrap());
                     }
                     NTMessage::UnAnnounce(un_announce) => {
                         cfg_tracing! {
                             tracing::info!("Server un_announced: {}", un_announce.name);
                         }
 
-                        client.announced_topics.lock().await.remove(&un_announce.id);
+                        let removed = client.announced_topics.lock().await.remove(&un_announce.id);
+                        (client.config.on_un_announce)(removed);
                     }
                     NTMessage::Properties(_) => {
                         // I don't need to do anything

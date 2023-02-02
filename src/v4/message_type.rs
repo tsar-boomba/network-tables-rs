@@ -86,6 +86,7 @@ impl Type {
         }
     }
 
+    #[inline]
     pub fn from_str(str: impl AsRef<str>) -> Option<Self> {
         match str.as_ref() {
             "boolean" => Some(Self::Boolean),
