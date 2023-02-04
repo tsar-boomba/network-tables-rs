@@ -13,15 +13,15 @@ pub enum Type {
     Rpc,
     MsgPack,
     ProtoBuf,
-    #[serde(serialize_with = "ser_bool_array")]
+    #[serde(rename = "boolean[]")]
     BooleanArray,
-    #[serde(serialize_with = "ser_double_array")]
+    #[serde(rename = "double[]")]
     DoubleArray,
-    #[serde(serialize_with = "ser_int_array")]
+    #[serde(rename = "int[]")]
     IntArray,
-    #[serde(serialize_with = "ser_float_array")]
+    #[serde(rename = "float[]")]
     FloatArray,
-    #[serde(serialize_with = "ser_string_array")]
+    #[serde(rename = "string[]")]
     StringArray,
 }
 
@@ -107,26 +107,6 @@ impl Type {
             _ => None,
         }
     }
-}
-
-fn ser_bool_array<S: Serializer>(serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str("boolean[]")
-}
-
-fn ser_double_array<S: Serializer>(serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str("double[]")
-}
-
-fn ser_int_array<S: Serializer>(serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str("int[]")
-}
-
-fn ser_float_array<S: Serializer>(serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str("float[]")
-}
-
-fn ser_string_array<S: Serializer>(serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.serialize_str("string[]")
 }
 
 struct MessageTypeVisitor;

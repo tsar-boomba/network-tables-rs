@@ -5,7 +5,7 @@ use super::Topic;
 #[derive()]
 pub struct Config {
     pub on_announce: Box<dyn Fn(&Topic) + Send + Sync>,
-    pub on_un_announce: Box<dyn Fn(Option<Topic>) + Send + Sync>
+    pub on_un_announce: Box<dyn Fn(Option<Topic>) + Send + Sync>,
 }
 
 impl Debug for Config {
@@ -18,7 +18,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             on_announce: Box::new(|_| {}),
-            on_un_announce: Box::new(|_| {})
+            on_un_announce: Box::new(|_| {}),
         }
     }
 }

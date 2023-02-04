@@ -39,7 +39,8 @@ struct InnerClient {
     sub_counter: parking_lot::Mutex<i32>,
     topic_counter: parking_lot::Mutex<i32>,
     config: Config,
-    start_time: Instant,
+    // Has to be mutable to prevent overflow if it becomes too long ago
+    start_time: parking_lot::Mutex<Instant>,
 }
 
 impl Client {
@@ -76,7 +77,7 @@ impl Client {
             server_time_offset: parking_lot::Mutex::new(0),
             sub_counter: parking_lot::Mutex::new(0),
             topic_counter: parking_lot::Mutex::new(0),
-            start_time: Instant::now(),
+            start_time: parking_lot::Mutex::new(Instant::now()),
             config,
         });
         inner.on_open(&mut *inner.socket.lock().await).await;
@@ -98,7 +99,7 @@ impl Client {
                 let now = Instant::now();
                 if now.duration_since(last_time_update).as_secs() >= TIMESTAMP_INTERVAL {
                     last_time_update = now;
-                    handle_task_client.update_time().await;
+                    handle_task_client.update_time().await.ok();
                 }
 
                 let mut socket = handle_task_client.socket.lock().await;
@@ -316,7 +317,9 @@ impl InnerClient {
 
     #[inline]
     pub(crate) fn client_time(&self) -> u32 {
-        Instant::now().duration_since(self.start_time).as_micros() as u32
+        Instant::now()
+            .duration_since(*self.start_time.lock())
+            .as_micros() as u32
     }
 
     pub(crate) fn server_time(&self) -> u32 {
@@ -324,20 +327,23 @@ impl InnerClient {
     }
 
     /// Takes new timestamp value and updates this client's offset
+    /// Returns `None` if the math failed
     pub(crate) fn handle_new_timestamp(
         &self,
         server_timestamp: u32,
         client_timestamp: Option<i64>,
-    ) {
+    ) -> Option<()> {
         if let Some(client_timestamp) = client_timestamp {
             let receive_time = self.client_time();
-            // println!("Received at: {receive_time}\nCient time: {client_timestamp}");
-            let round_trip_time = receive_time - client_timestamp as u32;
-            // println!("server_time: {server_timestamp}\nrtt: {round_trip_time}");
-            let server_time_at_receive = server_timestamp - round_trip_time.div(2) as u32;
-            // println!("Server time at receive: {server_time_at_receive}");
-            *self.server_time_offset.lock() = server_time_at_receive - receive_time;
+            let round_trip_time = receive_time.checked_sub(client_timestamp as u32)?;
+            let server_time_at_receive = server_timestamp.checked_sub(round_trip_time.div(2))?;
+
+            // Checked sub because if start_time was too long ago, it will overflow and panic
+            let offset = server_time_at_receive.checked_sub(receive_time)?;
+            *self.server_time_offset.lock() = offset;
         }
+
+        Some(())
     }
 
     pub(crate) fn new_topic_id(&self) -> i32 {
@@ -385,7 +391,7 @@ impl InnerClient {
             .await
     }
 
-    pub(crate) async fn update_time(&self) {
+    pub(crate) async fn update_time(&self) -> Result<(), crate::Error> {
         let announced_topics = self.announced_topics.lock().await;
         let time_topic = announced_topics.get(&-1);
 
@@ -394,7 +400,7 @@ impl InnerClient {
                 tracing::trace!("Updating timestamp.");
             }
 
-            log_result(
+            return log_result(
                 self.publish_value_w_timestamp(
                     time_topic.id,
                     time_topic.r#type,
@@ -402,9 +408,10 @@ impl InnerClient {
                     &rmpv::Value::Integer(self.client_time().into()),
                 )
                 .await,
-            )
-            .ok();
+            );
         }
+
+        Ok(())
     }
 
     // Called on connection open, must not fail!
@@ -653,7 +660,16 @@ async fn handle_message(client: Arc<InnerClient>, message: Message) {
                                 }
                             } else if id == -1 {
                                 // Timestamp update
-                                client.handle_new_timestamp(timestamp_micros, data.as_i64());
+                                match client.handle_new_timestamp(timestamp_micros, data.as_i64()) {
+                                    Some(_) => {}
+                                    None => {
+                                        // Math failed, update most recent time
+                                        *client.start_time.lock() = Instant::now();
+                                        client.update_time().await.ok();
+                                        client
+                                            .handle_new_timestamp(timestamp_micros, data.as_i64());
+                                    }
+                                };
                             } else {
                                 // Invalid id
                                 cfg_tracing! {
