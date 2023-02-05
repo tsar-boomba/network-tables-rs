@@ -476,6 +476,7 @@ impl InnerClient {
     }
 
     async fn reconnect(&self, socket: &mut WebSocket) {
+        (self.config.on_disconnect)();
         loop {
             cfg_tracing! {
                 tracing::info!("Attempting reconnect in 500ms");
@@ -495,6 +496,7 @@ impl InnerClient {
                 Ok((new_socket, _)) => {
                     *socket = new_socket;
                     self.on_open(socket).await;
+                    (self.config.on_reconnect)();
 
                     cfg_tracing! {
                         tracing::info!("Successfully reestablished connection.");

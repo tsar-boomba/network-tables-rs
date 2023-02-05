@@ -1,4 +1,4 @@
-use serde::{de::Visitor, ser::Serializer, Serialize};
+use serde::{de::Visitor, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
