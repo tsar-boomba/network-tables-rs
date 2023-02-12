@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [unreleased]
 
+### Features
+
+- Add more event listeners to v4 config
+
+## [0.0.4] - 2023-01-21
+
 ### Bug Fixes
 
 - Timestamp panic
