@@ -1,5 +1,6 @@
 #[cfg(feature = "client-v4")]
 pub mod client;
+#[cfg(feature = "client-v4")]
 pub mod client_config;
 pub mod message_type;
 pub mod messages;

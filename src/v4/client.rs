@@ -1,12 +1,13 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
-    fmt::Display,
     net::SocketAddr,
     ops::Div,
     sync::Arc,
     time::{Duration, Instant},
 };
+
+use crate::log_result;
 
 use super::{
     Announce, Config, InternalSub, MessageData, NTMessage, PublishProperties, PublishTopic,
@@ -33,11 +34,11 @@ struct InnerClient {
     // Keys are subuid, value is a handle to sub data and a sender to the sub's mpsc
     subscriptions: Mutex<HashMap<i32, InternalSub>>,
     announced_topics: Mutex<HashMap<i32, Topic>>,
-    client_published_topics: Mutex<HashMap<i32, PublishedTopic>>,
+    client_published_topics: Mutex<HashMap<u32, PublishedTopic>>,
     socket: tokio::sync::Mutex<WebSocket>,
     server_time_offset: parking_lot::Mutex<u32>,
     sub_counter: parking_lot::Mutex<i32>,
-    topic_counter: parking_lot::Mutex<i32>,
+    topic_counter: parking_lot::Mutex<u32>,
     config: Config,
     // Has to be mutable to prevent overflow if it becomes too long ago
     start_time: parking_lot::Mutex<Instant>,
@@ -163,15 +164,14 @@ impl Client {
         });
 
         if let Some(properties) = &properties {
-            messages[0] = publish_message;
-            messages[1] = NTMessage::SetProperties(SetProperties {
+            messages.push(publish_message);
+            messages.push(NTMessage::SetProperties(SetProperties {
                 name: name.as_ref(),
                 update: Cow::Borrowed(properties),
-            });
+            }));
         } else {
-            messages[0] = publish_message;
+            messages.push(publish_message);
         };
-        messages.shrink_to_fit();
 
         // Put message in an array and serialize
         let message = serde_json::to_string(&messages)?;
@@ -271,7 +271,12 @@ impl Client {
         value: &rmpv::Value,
     ) -> Result<(), crate::Error> {
         self.inner
-            .publish_value_w_timestamp(topic.pubuid, topic.r#type, timestamp, value)
+            .publish_value_w_timestamp(
+                UnsignedIntOrNegativeOne::UnsignedInt(topic.pubuid),
+                topic.r#type,
+                timestamp,
+                value,
+            )
             .await
     }
 
@@ -282,8 +287,16 @@ impl Client {
         value: &rmpv::Value,
     ) -> Result<(), crate::Error> {
         self.inner
-            .publish_value(topic.pubuid, topic.r#type, value)
+            .publish_value(
+                UnsignedIntOrNegativeOne::UnsignedInt(topic.pubuid),
+                topic.r#type,
+                value,
+            )
             .await
+    }
+
+    pub async fn use_announced_topics<F: Fn(&HashMap<i32, Topic>)>(&self, f: F) {
+        f(&*self.inner.announced_topics.lock().await)
     }
 }
 
@@ -346,7 +359,7 @@ impl InnerClient {
         Some(())
     }
 
-    pub(crate) fn new_topic_id(&self) -> i32 {
+    pub(crate) fn new_topic_id(&self) -> u32 {
         let mut current_id = self.topic_counter.lock();
         let new_id = current_id.checked_add(1).unwrap_or(1);
         *current_id = new_id;
@@ -362,7 +375,7 @@ impl InnerClient {
 
     pub(crate) async fn publish_value_w_timestamp(
         &self,
-        id: i32,
+        id: UnsignedIntOrNegativeOne,
         r#type: Type,
         timestamp: u32,
         value: &rmpv::Value,
@@ -372,9 +385,9 @@ impl InnerClient {
         // TODO: too lazy to handle these errors 😴
         rmp::encode::write_array_len(&mut buf, 4).unwrap();
         // Client side topic is guaranteed to have a uid
-        rmp::encode::write_i32(&mut buf, id).unwrap();
-        rmp::encode::write_u32(&mut buf, timestamp).unwrap();
-        rmp::encode::write_i32(&mut buf, r#type.as_u8() as i32).unwrap();
+        id.write_to_buf(&mut buf).unwrap();
+        rmp::encode::write_u32(&mut buf, timestamp as u32).unwrap();
+        rmp::encode::write_u32(&mut buf, r#type.as_u8() as u32).unwrap();
         rmpv::encode::write_value(&mut buf, value).unwrap();
 
         self.send_message(Message::Binary(buf)).await
@@ -383,7 +396,7 @@ impl InnerClient {
     /// Value should match topic type
     pub(crate) async fn publish_value(
         &self,
-        id: i32,
+        id: UnsignedIntOrNegativeOne,
         r#type: Type,
         value: &rmpv::Value,
     ) -> Result<(), crate::Error> {
@@ -402,7 +415,7 @@ impl InnerClient {
 
             return log_result(
                 self.publish_value_w_timestamp(
-                    time_topic.id,
+                    UnsignedIntOrNegativeOne::NegativeOne,
                     time_topic.r#type,
                     0,
                     &rmpv::Value::Integer(self.client_time().into()),
@@ -515,18 +528,6 @@ impl Clone for Client {
             inner: self.inner.clone(),
         }
     }
-}
-
-#[inline(always)]
-fn log_result<T, E: Display>(result: Result<T, E>) -> Result<T, E> {
-    #[cfg(feature = "tracing")]
-    match &result {
-        Err(err) => {
-            tracing::error!("{}", err)
-        }
-        _ => {}
-    };
-    result
 }
 
 /// Handles messages from the server
@@ -693,5 +694,23 @@ async fn handle_message(client: Arc<InnerClient>, message: Message) {
             }
         }
         _ => {}
+    }
+}
+
+#[derive(Debug)]
+enum UnsignedIntOrNegativeOne {
+    NegativeOne,
+    UnsignedInt(u32),
+}
+
+impl UnsignedIntOrNegativeOne {
+    pub fn write_to_buf<W: rmp::encode::RmpWrite>(
+        &self,
+        wr: &mut W,
+    ) -> Result<(), rmp::encode::ValueWriteError<W::Error>> {
+        match self {
+            Self::NegativeOne => rmp::encode::write_i32(wr, -1),
+            Self::UnsignedInt(u_int) => rmp::encode::write_u32(wr, *u_int),
+        }
     }
 }

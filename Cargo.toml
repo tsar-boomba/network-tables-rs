@@ -11,31 +11,37 @@ readme = "README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rmp = "0.8.8"
-rmp-serde = "1.1.1"
-rmpv = { version = "1.0", features = ["with-serde"] }
-tokio = { version = "1.23.0", features = ["rt", "sync", "net", "time", "macros", "rt-multi-thread", "parking_lot"] }
-tokio-tungstenite = { version = "0.18.0" }
-serde = { version = "1", features = ["derive"] }
+tokio = { version = "1.24", features = ["rt", "sync", "net", "time", "macros", "parking_lot"] }
 parking_lot = "0.12.1"
-serde_json = "1"
 futures-util = "0.3.25"
 thiserror = "1.0.38"
+rand = "0.8.5"
+
+# v4 implementation
+rmp = { version = "0.8", optional = true }
+rmp-serde = { version = "1.1.1", optional = true }
+rmpv = { version = "1.0", features = ["with-serde"], optional = true }
+serde_json = { version = "1", optional = true }
+tokio-tungstenite = { version = "0.18.0", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
 
 # tracing
 tracing = { version = "0.1", optional = true }
 
-# bin
-tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
-rand = "0.8.5"
+# v3 implementation
+bytes = { version = "1.3", optional = true }
+leb128 = { version = "0.2.5", optional = true }
 
 [features]
 default = ["tracing"]
 tracing = ["dep:tracing"]
-rustls = ["tokio-tungstenite/rustls"]
-native-tls = ["tokio-tungstenite/native-tls"]
-client-v4 = []
-server-v4 = []
+v4-rustls = ["tokio-tungstenite/rustls"]
+v4-native-tls = ["tokio-tungstenite/native-tls"]
+__v4 = ["tokio-tungstenite", "dep:rmpv", "dep:rmp-serde", "dep:rmp", "dep:serde", "dep:serde_json"]
+client-v4 = ["__v4"]
+server-v4 = ["__v4"]
+__v3 = ["dep:bytes", "dep:leb128"]
+client-v3 = ["__v3"]
 
 [package.metadata.release]
 pre-release-hook = ["./tools/changelog.sh"]

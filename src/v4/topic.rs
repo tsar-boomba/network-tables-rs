@@ -11,7 +11,7 @@ use super::{
 #[serde(rename_all = "lowercase")]
 pub struct PublishedTopic {
     pub(crate) name: String,
-    pub(crate) pubuid: i32,
+    pub(crate) pubuid: u32,
     pub(crate) r#type: Type,
     pub(crate) properties: Option<PublishProperties>,
 }
@@ -19,11 +19,11 @@ pub struct PublishedTopic {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub struct Topic {
-    pub(crate) name: String,
-    pub(crate) id: i32,
-    pub(crate) pubuid: Option<i32>,
-    pub(crate) r#type: Type,
-    pub(crate) properties: Option<PublishProperties>,
+    pub name: String,
+    pub id: i32,
+    pub pubuid: Option<i32>,
+    pub r#type: Type,
+    pub properties: Option<PublishProperties>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

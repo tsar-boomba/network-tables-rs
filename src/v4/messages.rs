@@ -25,7 +25,7 @@ pub(crate) enum NTMessage<'a> {
 #[serde(rename_all = "lowercase")]
 pub struct PublishTopic<'a> {
     pub(crate) name: &'a str,
-    pub(crate) pubuid: i32,
+    pub(crate) pubuid: u32,
     pub(crate) r#type: Type,
     /// Initial topic properties.
     /// If the topic is newly created (e.g. there are no other publishers) this sets the topic properties.
@@ -38,7 +38,7 @@ pub struct PublishTopic<'a> {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub struct UnpublishTopic {
-    pub(crate) pubuid: i32,
+    pub(crate) pubuid: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

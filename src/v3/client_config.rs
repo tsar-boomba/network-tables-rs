@@ -1,10 +1,9 @@
 use std::fmt::Debug;
 
-use super::Topic;
-
+#[derive()]
 pub struct Config {
-    pub on_announce: Box<dyn Fn(&Topic) + Send + Sync>,
-    pub on_un_announce: Box<dyn Fn(Option<Topic>) + Send + Sync>,
+    pub on_announce: Box<dyn Fn(()) + Send + Sync>,
+    pub on_un_announce: Box<dyn Fn(Option<()>) + Send + Sync>,
     pub on_disconnect: Box<dyn Fn() + Send + Sync>,
     pub on_reconnect: Box<dyn Fn() + Send + Sync>,
 }
