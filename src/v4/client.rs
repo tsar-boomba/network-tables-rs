@@ -48,7 +48,7 @@ impl Client {
     pub async fn try_new_w_config(
         server_addr: impl Into<SocketAddr>,
         config: Config,
-    ) -> Result<Self, tokio_tungstenite::tungstenite::Error> {
+    ) -> Result<Self, crate::Error> {
         // Connect to server
         let server_addr = server_addr.into();
         let mut request = format!(
@@ -63,7 +63,11 @@ impl Client {
         );
         let uri = request.uri().clone();
 
-        let (socket, _) = tokio_tungstenite::connect_async(request).await?;
+        let (socket, _) = tokio::time::timeout(
+            Duration::from_millis(config.connect_timeout),
+            tokio_tungstenite::connect_async(request),
+        )
+        .await??;
 
         cfg_tracing! {
             tracing::info!("Connected to {}", uri);
@@ -130,9 +134,7 @@ impl Client {
         Ok(Self { inner })
     }
 
-    pub async fn try_new(
-        server_addr: impl Into<SocketAddr>,
-    ) -> Result<Self, tokio_tungstenite::tungstenite::Error> {
+    pub async fn try_new(server_addr: impl Into<SocketAddr>) -> Result<Self, crate::Error> {
         Self::try_new_w_config(server_addr, Config::default()).await
     }
 
@@ -489,12 +491,12 @@ impl InnerClient {
     }
 
     async fn reconnect(&self, socket: &mut WebSocket) {
+        cfg_tracing! {
+            tracing::info!("Disconnected from server, attempting to reconnect.");
+        }
         (self.config.on_disconnect)();
         loop {
-            cfg_tracing! {
-                tracing::info!("Attempting reconnect in 500ms");
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::time::sleep(Duration::from_millis(self.config.connect_timeout)).await;
 
             let mut request = format!("ws://{}/nt/rust-client", self.server_addr)
                 .into_client_request()
@@ -505,17 +507,25 @@ impl InnerClient {
                 HeaderValue::from_static("networktables.first.wpi.edu"),
             );
 
-            match tokio_tungstenite::connect_async(request).await {
-                Ok((new_socket, _)) => {
-                    *socket = new_socket;
-                    self.on_open(socket).await;
-                    (self.config.on_reconnect)();
+            match tokio::time::timeout(
+                Duration::from_millis(self.config.connect_timeout),
+                tokio_tungstenite::connect_async(request),
+            )
+            .await
+            {
+                Ok(connect_result) => match connect_result {
+                    Ok((new_socket, _)) => {
+                        *socket = new_socket;
+                        self.on_open(socket).await;
+                        (self.config.on_reconnect)();
 
-                    cfg_tracing! {
-                        tracing::info!("Successfully reestablished connection.");
+                        cfg_tracing! {
+                            tracing::info!("Successfully reestablished connection.");
+                        }
+                        break;
                     }
-                    break;
-                }
+                    Err(_) => {}
+                },
                 Err(_) => {}
             }
         }
