@@ -643,26 +643,38 @@ async fn handle_message(client: Arc<InnerClient>, message: Message) {
                                         if let Some(topic) =
                                             client.announced_topics.lock().await.get(&(id as i32))
                                         {
-                                            client.subscriptions.lock().await.retain(|_, sub| {
-                                                if !sub.is_valid() {
-                                                    false
-                                                } else {
-                                                    if sub.matches_topic(topic) {
-                                                        sub.sender
-                                                            .try_send(MessageData {
-                                                                topic_name: topic.name.clone(),
-                                                                timestamp: timestamp_micros,
-                                                                r#type: r#type.clone(),
-                                                                data: data.to_owned(),
-                                                            })
-                                                            .is_ok()
-                                                    } else {
-                                                        false
-                                                    }
+                                            send_value_to_subscriber(
+                                                client.clone(),
+                                                topic,
+                                                timestamp_micros,
+                                                r#type,
+                                                data,
+                                            )
+                                            .await;
+                                        } else {
+                                            // Topic wasn't previously announced or hasn't been announced yet
+                                            // Spawn a task to try and add it again
+                                            let client = client.clone();
+                                            let data = data.to_owned();
+                                            tokio::spawn(async move {
+                                                tokio::time::sleep(Duration::from_millis(100))
+                                                    .await;
+                                                if let Some(topic) = client
+                                                    .announced_topics
+                                                    .lock()
+                                                    .await
+                                                    .get(&(id as i32))
+                                                {
+                                                    send_value_to_subscriber(
+                                                        client.clone(),
+                                                        topic,
+                                                        timestamp_micros,
+                                                        r#type,
+                                                        &data,
+                                                    )
+                                                    .await
                                                 }
                                             });
-                                        } else {
-                                            // Topic wasn't previously announced, ignoring it
                                         }
                                     } else {
                                         // Invalid type id
@@ -705,6 +717,33 @@ async fn handle_message(client: Arc<InnerClient>, message: Message) {
         }
         _ => {}
     }
+}
+
+async fn send_value_to_subscriber(
+    client: Arc<InnerClient>,
+    topic: &Topic,
+    timestamp_micros: u32,
+    r#type: Type,
+    data: &rmpv::Value,
+) {
+    client.subscriptions.lock().await.retain(|_, sub| {
+        if !sub.is_valid() {
+            false
+        } else {
+            if sub.matches_topic(topic) {
+                sub.sender
+                    .try_send(MessageData {
+                        topic_name: topic.name.clone(),
+                        timestamp: timestamp_micros,
+                        r#type: r#type.clone(),
+                        data: data.to_owned(),
+                    })
+                    .is_ok()
+            } else {
+                false
+            }
+        }
+    });
 }
 
 #[derive(Debug)]

@@ -44,9 +44,6 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut values_received = 0;
     while let Some(message) = subscription.next().await {
-        tracing::info!("message from server: {}", message.topic_name);
-        tracing::info!("Values received: {}", values_received + 1);
-        client.use_announced_topics(|topics| tracing::info!("Topics announced: {}", topics.len())).await;
         values_received += 1;
     }
 
