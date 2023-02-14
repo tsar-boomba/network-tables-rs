@@ -11,7 +11,6 @@ use std::collections::VecDeque;
 pub use entry::*;
 pub use message::*;
 
-
 ////////////////
 /// LEB128 encoding & decoding functions
 ////////////////
@@ -30,9 +29,9 @@ impl FromSlice for String {
 }
 
 impl FromSlice for Vec<u8> {
-	fn from_slice(slice: &[u8]) -> Result<Self, crate::Error> {
-		Ok(Vec::from(slice))
-	}
+    fn from_slice(slice: &[u8]) -> Result<Self, crate::Error> {
+        Ok(Vec::from(slice))
+    }
 }
 
 /// Encodes a slice according to networktables v3 specification.
@@ -46,9 +45,9 @@ fn leb_128_encode_bytes(slice: &[u8]) -> Result<Vec<u8>, crate::Error> {
 }
 
 fn leb128_decode_bytes<T: FromSlice>(buf: Vec<u8>) -> Result<T, crate::Error> {
-	let mut buf = VecDeque::from(buf);
-	// Make into a single slice
-	buf.make_contiguous();
+    let mut buf = VecDeque::from(buf);
+    // Make into a single slice
+    buf.make_contiguous();
 
     // VecDeque Read impl removes the bytes that were read
     // leaving the bytes we actually care about

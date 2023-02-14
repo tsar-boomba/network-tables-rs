@@ -4,16 +4,15 @@ use bytes::Bytes;
 #[repr(u16)]
 #[derive(Debug, Clone)]
 pub enum Type {
-	Boolean = 0x00,
-	Double = 0x01,
-	String = 0x02,
-	Raw = 0x03,
-	BooleanArray = 0x10,
-	DoubleArray = 0x11,
-	StringArray = 0x12,
-	RPCDefinition = 0x29
+    Boolean = 0x00,
+    Double = 0x01,
+    String = 0x02,
+    Raw = 0x03,
+    BooleanArray = 0x10,
+    DoubleArray = 0x11,
+    StringArray = 0x12,
+    RPCDefinition = 0x29,
 }
-
 
 #[derive(Debug, Clone)]
 pub enum EntryData<'a> {
@@ -51,24 +50,22 @@ pub(crate) enum Message<'a> {
         value: EntryData<'a>,
     },
     EntryUpdate {
-		id: u16,
+        id: u16,
         sequence_number: u16,
         r#type: Type,
         value: EntryData<'a>,
     },
     EntryFlagsUpdate {
-		id: u16,
-		flags: u8,
-	},
+        id: u16,
+        flags: u8,
+    },
     EntryDelete {
-		id: u16
-	},
-    ClearAllEntries {
-
-	},
-	/// Not supported
+        id: u16,
+    },
+    ClearAllEntries {},
+    /// Not supported
     RPCExecute,
-	/// Not supported
+    /// Not supported
     RPCResponse,
 }
 
@@ -91,9 +88,9 @@ impl<'a> Message<'a> {
         }
     }
 
-	pub fn from_bytes(bytes: Bytes) {}
+    pub fn from_bytes(bytes: Bytes) {}
 
-	pub fn as_bytes(&self) -> Bytes {
-		todo!()
-	}
+    pub fn as_bytes(&self) -> Bytes {
+        todo!()
+    }
 }

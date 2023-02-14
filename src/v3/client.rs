@@ -7,12 +7,9 @@ use std::{
 
 use crate::log_result;
 
-use tokio::{
-    net::TcpStream,
-    sync::Mutex, io::AsyncWriteExt,
-};
+use tokio::{io::AsyncWriteExt, net::TcpStream, sync::Mutex};
 
-use super::{client_config::Config, Type, message::Message, EntryData};
+use super::{client_config::Config, message::Message, EntryData, Type};
 
 #[derive(Debug)]
 pub struct Client {
@@ -22,7 +19,7 @@ pub struct Client {
 #[derive(Debug)]
 struct InnerClient {
     server_addr: SocketAddr,
-	entries: Mutex<HashMap<i32, ()>>,
+    entries: Mutex<HashMap<i32, ()>>,
     socket: Mutex<TcpStream>,
     config: Config,
 }
@@ -43,7 +40,7 @@ impl Client {
 
         let inner = Arc::new(InnerClient {
             server_addr,
-			entries: Mutex::new(HashMap::new()),
+            entries: Mutex::new(HashMap::new()),
             socket: Mutex::new(socket),
             config,
         });
@@ -70,16 +67,13 @@ impl Client {
 
                 let mut socket = handle_task_client.socket.lock().await;
                 // unwrap should be okay since this "Stream" never ends
-                
             }
         });
 
         Ok(Self { inner })
     }
 
-    pub async fn try_new(
-        server_addr: impl Into<SocketAddr>,
-    ) -> Result<Self, std::io::Error> {
+    pub async fn try_new(server_addr: impl Into<SocketAddr>) -> Result<Self, std::io::Error> {
         Self::try_new_w_config(server_addr, Config::default()).await
     }
 
@@ -95,9 +89,7 @@ impl Client {
         self.inner.server_addr
     }
 
-    pub async fn create_entry(
-        &self,
-    ) -> Result<(), crate::Error> {
+    pub async fn create_entry(&self) -> Result<(), crate::Error> {
         todo!()
     }
 
@@ -159,7 +151,6 @@ impl InnerClient {
 
     // Called on connection open, must not fail!
     pub(crate) async fn on_open(&self, socket: &mut TcpStream) {
-        
         cfg_tracing! {
             tracing::info!("Prepared new connection.");
         }
