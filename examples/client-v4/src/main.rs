@@ -42,9 +42,8 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let mut values_received = 0;
     while let Some(message) = subscription.next().await {
-        values_received += 1;
+        tracing::info!("{:?}", message);
     }
 
     Ok(())

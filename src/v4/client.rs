@@ -109,25 +109,33 @@ impl Client {
 
                 let mut socket = handle_task_client.socket.lock().await;
                 // unwrap should be okay since this "Stream" never ends
-                match poll!(socket.next()) {
-                    std::task::Poll::Ready(Some(Ok(message))) => {
-                        cfg_tracing! {
-                            tracing::trace!("Message received from server.");
+                loop {
+                    match poll!(socket.next()) {
+                        std::task::Poll::Ready(Some(Ok(message))) => {
+                            cfg_tracing! {
+                                tracing::trace!("Message received from server.");
+                            }
+
+                            // Handle the messages in order
+                            handle_message(Arc::clone(&handle_task_client), message).await;
                         }
-                        // Spawn task to handle the message
-                        tokio::spawn(handle_message(Arc::clone(&handle_task_client), message));
-                    }
-                    std::task::Poll::Ready(Some(Err(err))) => match err {
-                        tokio_tungstenite::tungstenite::Error::AlreadyClosed => {
-                            handle_task_client.reconnect(&mut socket).await;
+                        std::task::Poll::Ready(Some(Err(err))) => match err {
+                            tokio_tungstenite::tungstenite::Error::AlreadyClosed => {
+                                handle_task_client.reconnect(&mut socket).await;
+                            }
+                            tokio_tungstenite::tungstenite::Error::ConnectionClosed => {
+                                handle_task_client.reconnect(&mut socket).await;
+                            }
+                            _ => {}
+                        },
+                        _ => {
+                            // No message ready yet, yield to executor
+                            break;
                         }
-                        tokio_tungstenite::tungstenite::Error::ConnectionClosed => {
-                            handle_task_client.reconnect(&mut socket).await;
-                        }
-                        _ => {}
-                    },
-                    _ => {}
-                };
+                    };
+                }
+
+                tokio::time::sleep(Duration::from_millis(7)).await;
             }
         });
 
@@ -654,11 +662,16 @@ async fn handle_message(client: Arc<InnerClient>, message: Message) {
                                         } else {
                                             // Topic wasn't previously announced or hasn't been announced yet
                                             // Spawn a task to try and add it again
+                                            // this shouldn't happen anymore, but for safety I'll keep it 😁
                                             let client = client.clone();
                                             let data = data.to_owned();
+
+                                            cfg_tracing! {
+                                                tracing::error!("Received a topic before it was announced! 😱");
+                                            }
+
                                             tokio::spawn(async move {
-                                                tokio::time::sleep(Duration::from_millis(100))
-                                                    .await;
+                                                tokio::time::sleep(Duration::from_millis(7)).await;
                                                 if let Some(topic) = client
                                                     .announced_topics
                                                     .lock()
