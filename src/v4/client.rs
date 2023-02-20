@@ -3,7 +3,7 @@ use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
     ops::Div,
-    sync::Arc,
+    sync::{Arc, Weak},
     time::{Duration, Instant},
 };
 
@@ -14,9 +14,10 @@ use super::{
     PublishedTopic, SetProperties, Subscribe, Subscription, SubscriptionData, SubscriptionOptions,
     Topic, Type,
 };
-use futures_util::{poll, SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt};
 use tokio::{
     net::TcpStream,
+    select,
     sync::{mpsc, Mutex},
 };
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, http::HeaderValue, Message};
@@ -35,7 +36,7 @@ struct InnerClient {
     subscriptions: Mutex<HashMap<i32, InternalSub>>,
     announced_topics: Mutex<HashMap<i32, Topic>>,
     client_published_topics: Mutex<HashMap<u32, PublishedTopic>>,
-    socket: tokio::sync::Mutex<WebSocket>,
+    socket_sender: mpsc::Sender<Message>,
     server_time_offset: parking_lot::Mutex<u32>,
     sub_counter: parking_lot::Mutex<i32>,
     topic_counter: parking_lot::Mutex<u32>,
@@ -49,93 +50,34 @@ impl Client {
         server_addr: impl Into<SocketAddr>,
         config: Config,
     ) -> Result<Self, crate::Error> {
-        // Connect to server
-        let server_addr = server_addr.into();
-        let mut request = format!(
-            "ws://{server_addr}/nt/rust-client-{}",
-            rand::random::<u32>()
-        )
-        .into_client_request()?;
-        // Add sub-protocol header
-        request.headers_mut().append(
-            "Sec-WebSocket-Protocol",
-            HeaderValue::from_static("networktables.first.wpi.edu"),
-        );
-        let uri = request.uri().clone();
-
-        let (socket, _) = tokio::time::timeout(
-            Duration::from_millis(config.connect_timeout),
-            tokio_tungstenite::connect_async(request),
-        )
-        .await??;
-
-        cfg_tracing! {
-            tracing::info!("Connected to {}", uri);
-        }
-
+        let (socket_sender, socket_receiver) = mpsc::channel::<Message>(100);
         let inner = Arc::new(InnerClient {
-            server_addr,
+            server_addr: server_addr.into(),
             subscriptions: Mutex::new(HashMap::new()),
             announced_topics: Mutex::new(HashMap::new()),
             client_published_topics: Mutex::new(HashMap::new()),
-            socket: Mutex::new(socket),
+            socket_sender,
             server_time_offset: parking_lot::Mutex::new(0),
             sub_counter: parking_lot::Mutex::new(0),
             topic_counter: parking_lot::Mutex::new(0),
             start_time: parking_lot::Mutex::new(Instant::now()),
             config,
         });
-        inner.on_open(&mut *inner.socket.lock().await).await;
+        setup_socket(Arc::downgrade(&inner), socket_receiver).await?;
+
+        inner.on_open().await;
 
         // Task to handle messages from server
-        let handle_task_client = Arc::clone(&inner);
+        let timestamp_task_client = Arc::downgrade(&inner);
         tokio::spawn(async move {
             const TIMESTAMP_INTERVAL: u64 = 5;
-            // Start in the past so that first iteration will update the timestamp
-            let mut last_time_update = Instant::now()
-                .checked_sub(Duration::from_secs(TIMESTAMP_INTERVAL))
-                .unwrap();
             loop {
-                if Arc::strong_count(&handle_task_client) <= 1 {
-                    // If this is the last reference holder, stop
-                    break;
-                }
+                match timestamp_task_client.upgrade() {
+                    Some(client) => client.update_time().await.ok(),
+                    None => break,
+                };
 
-                let now = Instant::now();
-                if now.duration_since(last_time_update).as_secs() >= TIMESTAMP_INTERVAL {
-                    last_time_update = now;
-                    handle_task_client.update_time().await.ok();
-                }
-
-                let mut socket = handle_task_client.socket.lock().await;
-                // unwrap should be okay since this "Stream" never ends
-                loop {
-                    match poll!(socket.next()) {
-                        std::task::Poll::Ready(Some(Ok(message))) => {
-                            cfg_tracing! {
-                                tracing::trace!("Message received from server.");
-                            }
-
-                            // Handle the messages in order
-                            handle_message(Arc::clone(&handle_task_client), message).await;
-                        }
-                        std::task::Poll::Ready(Some(Err(err))) => match err {
-                            tokio_tungstenite::tungstenite::Error::AlreadyClosed => {
-                                handle_task_client.reconnect(&mut socket).await;
-                            }
-                            tokio_tungstenite::tungstenite::Error::ConnectionClosed => {
-                                handle_task_client.reconnect(&mut socket).await;
-                            }
-                            _ => {}
-                        },
-                        _ => {
-                            // No message ready yet, yield to executor
-                            break;
-                        }
-                    };
-                }
-
-                tokio::time::sleep(Duration::from_millis(7)).await;
+                tokio::time::sleep(Duration::from_secs(TIMESTAMP_INTERVAL)).await;
             }
         });
 
@@ -186,7 +128,7 @@ impl Client {
         // Put message in an array and serialize
         let message = serde_json::to_string(&messages)?;
 
-        log_result(self.inner.send_message(Message::Text(message)).await)?;
+        self.inner.send_message(Message::Text(message)).await;
 
         let topic = PublishedTopic {
             name: name.as_ref().to_owned(),
@@ -208,7 +150,7 @@ impl Client {
         // Put message in an array and serialize
         let message = serde_json::to_string(&[topic.as_unpublish()])?;
 
-        log_result(self.inner.send_message(Message::Text(message)).await)?;
+        self.inner.send_message(Message::Text(message)).await;
 
         Ok(())
     }
@@ -239,7 +181,7 @@ impl Client {
             options: options.clone(),
         })])?;
 
-        log_result(self.inner.send_message(Message::Text(message)).await)?;
+        self.inner.send_message(Message::Text(message)).await;
 
         let data = Arc::new(SubscriptionData {
             options: options,
@@ -262,7 +204,7 @@ impl Client {
     pub async fn unsubscribe(&self, sub: Subscription) -> Result<(), crate::Error> {
         // Put message in an array and serialize
         let message = serde_json::to_string(&[sub.as_unsubscribe()])?;
-        log_result(self.inner.send_message(Message::Text(message)).await)?;
+        self.inner.send_message(Message::Text(message)).await;
 
         // Remove from our subscriptions
         self.inner
@@ -312,30 +254,13 @@ impl Client {
 
 impl InnerClient {
     /// Sends message in websocket, handling reconnection if necessary
-    pub(crate) async fn send_message(&self, message: Message) -> Result<(), crate::Error> {
+    pub(crate) async fn send_message(&self, message: Message) {
         cfg_tracing! {
             tracing::trace!("Sending message: {message:?}");
         }
 
-        let mut socket = self.socket.lock().await;
-
-        loop {
-            // somehow not clone message on every iteration???
-            match socket.send(message.clone()).await {
-                Ok(_) => {
-                    return Ok(());
-                }
-                Err(err) => match err {
-                    tokio_tungstenite::tungstenite::Error::AlreadyClosed => {
-                        self.reconnect(&mut socket).await;
-                    }
-                    tokio_tungstenite::tungstenite::Error::ConnectionClosed => {
-                        self.reconnect(&mut socket).await;
-                    }
-                    _ => return Err(err.into()),
-                },
-            }
-        }
+        // Should never be dropped before a send goes off
+        self.socket_sender.send(message).await.unwrap();
     }
 
     #[inline]
@@ -400,7 +325,7 @@ impl InnerClient {
         rmp::encode::write_u32(&mut buf, r#type.as_u8() as u32).unwrap();
         rmpv::encode::write_value(&mut buf, value).unwrap();
 
-        self.send_message(Message::Binary(buf)).await
+        Ok(self.send_message(Message::Binary(buf)).await)
     }
 
     /// Value should match topic type
@@ -423,22 +348,21 @@ impl InnerClient {
                 tracing::trace!("Updating timestamp.");
             }
 
-            return log_result(
-                self.publish_value_w_timestamp(
+            return self
+                .publish_value_w_timestamp(
                     UnsignedIntOrNegativeOne::NegativeOne,
                     time_topic.r#type,
                     0,
                     &rmpv::Value::Integer(self.client_time().into()),
                 )
-                .await,
-            );
+                .await;
         }
 
         Ok(())
     }
 
     // Called on connection open, must not fail!
-    pub(crate) async fn on_open(&self, socket: &mut WebSocket) {
+    pub(crate) async fn on_open(&self) {
         let mut announced = self.announced_topics.lock().await;
         let client_published = self.client_published_topics.lock().await;
         let mut subscriptions = self.subscriptions.lock().await;
@@ -488,54 +412,11 @@ impl InnerClient {
         }));
 
         // Send all messages at once (please don't fail 🥺)
-        socket
-            .send(Message::Text(serde_json::to_string(&messages).unwrap()))
-            .await
-            .ok();
+        self.send_message(Message::Text(serde_json::to_string(&messages).unwrap()))
+            .await;
 
         cfg_tracing! {
             tracing::info!("Prepared new connection.");
-        }
-    }
-
-    async fn reconnect(&self, socket: &mut WebSocket) {
-        cfg_tracing! {
-            tracing::info!("Disconnected from server, attempting to reconnect.");
-        }
-        (self.config.on_disconnect)();
-        loop {
-            tokio::time::sleep(Duration::from_millis(self.config.connect_timeout)).await;
-
-            let mut request = format!("ws://{}/nt/rust-client", self.server_addr)
-                .into_client_request()
-                .unwrap();
-            // Add sub-protocol header
-            request.headers_mut().append(
-                "Sec-WebSocket-Protocol",
-                HeaderValue::from_static("networktables.first.wpi.edu"),
-            );
-
-            match tokio::time::timeout(
-                Duration::from_millis(self.config.connect_timeout),
-                tokio_tungstenite::connect_async(request),
-            )
-            .await
-            {
-                Ok(connect_result) => match connect_result {
-                    Ok((new_socket, _)) => {
-                        *socket = new_socket;
-                        self.on_open(socket).await;
-                        (self.config.on_reconnect)();
-
-                        cfg_tracing! {
-                            tracing::info!("Successfully reestablished connection.");
-                        }
-                        break;
-                    }
-                    Err(_) => {}
-                },
-                Err(_) => {}
-            }
         }
     }
 }
@@ -757,6 +638,138 @@ async fn send_value_to_subscriber(
             }
         }
     });
+}
+
+/// Upgrade the weak pointer or stop the task
+macro_rules! upgrade_client {
+    ($client:expr) => {
+        match $client.upgrade() {
+            Some(v) => v,
+            None => break,
+        }
+    };
+}
+
+async fn setup_socket(
+    client: Weak<InnerClient>,
+    mut receiver: mpsc::Receiver<Message>,
+) -> Result<(), crate::Error> {
+    let mut request = format!(
+        "ws://{}/nt/rust-client-{}",
+        client.upgrade().unwrap().server_addr,
+        rand::random::<u32>()
+    )
+    .into_client_request()?;
+    // Add sub-protocol header
+    request.headers_mut().append(
+        "Sec-WebSocket-Protocol",
+        HeaderValue::from_static("networktables.first.wpi.edu"),
+    );
+    let uri = request.uri().clone();
+
+    let (mut socket, _) = tokio::time::timeout(
+        Duration::from_millis(client.upgrade().unwrap().config.connect_timeout),
+        tokio_tungstenite::connect_async(request),
+    )
+    .await??;
+
+    cfg_tracing! {
+        tracing::info!("Connected to {}", uri);
+    }
+
+    tokio::spawn(async move {
+        loop {
+            let _: Result<(), crate::Error> = select! {
+                message = socket.next() => {
+                    // Message from server
+
+                    // unwrap should be fine because the "stream" never ends
+                    match message.unwrap() {
+                        Ok(message) => {
+                            handle_message(upgrade_client!(client), message).await;
+                        },
+                        Err(err) => handle_disconnect(Err::<(), _>(err), upgrade_client!(client), &mut socket).await?,
+                    };
+
+                    Ok(())
+                },
+                message = receiver.recv() => {
+                    // Message from client
+                    if let Some(message) = message {
+                        handle_disconnect(
+                            socket.send(message).await,
+                            upgrade_client!(client),
+                            &mut socket
+                        ).await?;
+                    } else {
+                        // Other side of channel was dropped, end task
+                        break;
+                    }
+
+                    Ok(())
+                },
+            };
+        }
+
+        Ok::<(), crate::Error>(())
+    });
+
+    Ok(())
+}
+
+async fn handle_disconnect<T>(
+    result: Result<T, tokio_tungstenite::tungstenite::Error>,
+    client: Arc<InnerClient>,
+    socket: &mut WebSocket,
+) -> Result<(), tokio_tungstenite::tungstenite::Error> {
+    match result {
+        Ok(_) => Ok(()),
+        Err(err) => match err {
+            tokio_tungstenite::tungstenite::Error::AlreadyClosed
+            | tokio_tungstenite::tungstenite::Error::ConnectionClosed => {
+                cfg_tracing! {
+                    tracing::info!("Disconnected from server, attempting to reconnect.");
+                }
+                (client.config.on_disconnect)();
+                loop {
+                    tokio::time::sleep(Duration::from_millis(client.config.connect_timeout)).await;
+
+                    let mut request = format!("ws://{}/nt/rust-client", client.server_addr)
+                        .into_client_request()
+                        .unwrap();
+                    // Add sub-protocol header
+                    request.headers_mut().append(
+                        "Sec-WebSocket-Protocol",
+                        HeaderValue::from_static("networktables.first.wpi.edu"),
+                    );
+
+                    match tokio::time::timeout(
+                        Duration::from_millis(client.config.connect_timeout),
+                        tokio_tungstenite::connect_async(request),
+                    )
+                    .await
+                    {
+                        Ok(connect_result) => match connect_result {
+                            Ok((new_socket, _)) => {
+                                *socket = new_socket;
+                                client.on_open().await;
+                                (client.config.on_reconnect)();
+
+                                cfg_tracing! {
+                                    tracing::info!("Successfully reestablished connection.");
+                                }
+
+                                break Ok(());
+                            }
+                            Err(_) => {}
+                        },
+                        Err(_) => {}
+                    }
+                }
+            }
+            _ => Err(err),
+        },
+    }
 }
 
 #[derive(Debug)]
