@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     net::SocketAddr,
     ops::Div,
     sync::{Arc, Weak},
@@ -499,117 +499,111 @@ async fn handle_message(client: Arc<InnerClient>, message: Message) {
         }
         Message::Binary(msgpack) => {
             // Message pack value, update
-            let data = match rmp_serde::decode::from_slice(&msgpack) {
-                Ok(data) => data,
-                Err(_) => {
-                    cfg_tracing! {
-                        tracing::error!("Server sent an invalid msgpack data: {msgpack:?}");
-                    }
-                    return;
-                }
-            };
 
-            match data {
-                rmpv::Value::Array(array) => {
-                    if array.len() != 4 {
+            // Put the raw data in a VecDeque because its read impl removes bytes from it
+            // so we keep deserializing msgpack from the VecDeque until it is emptied out
+            let mut msgpack = VecDeque::from(msgpack);
+            while let Ok(data) = rmp_serde::decode::from_read(&mut msgpack) {
+                match data {
+                    rmpv::Value::Array(array) => handle_value(array, Arc::clone(&client)).await,
+                    _ => {
                         cfg_tracing! {
-                            tracing::error!("Server sent an invalid msgpack data, wrong length.");
+                            tracing::error!("Server sent an invalid msgpack data, not an array.");
                         }
-                        return;
-                    }
-
-                    let id = array[0].as_i64().map(|n| n as i32);
-                    let timestamp_micros = array[1].as_u64().map(|n| n as u32);
-                    let type_idx = array[2].as_u64();
-                    let data = &array[3];
-
-                    if let Some(id) = id {
-                        if let Some(timestamp_micros) = timestamp_micros {
-                            if id >= 0 {
-                                if let Some(type_idx) = type_idx {
-                                    let r#type = Type::from_num(type_idx);
-                                    if let Some(r#type) = r#type {
-                                        if let Some(topic) =
-                                            client.announced_topics.lock().await.get(&(id as i32))
-                                        {
-                                            send_value_to_subscriber(
-                                                client.clone(),
-                                                topic,
-                                                timestamp_micros,
-                                                r#type,
-                                                data,
-                                            )
-                                            .await;
-                                        } else {
-                                            // Topic wasn't previously announced or hasn't been announced yet
-                                            // Spawn a task to try and add it again
-                                            // this shouldn't happen anymore, but for safety I'll keep it 😁
-                                            let client = client.clone();
-                                            let data = data.to_owned();
-
-                                            cfg_tracing! {
-                                                tracing::error!("Received a topic before it was announced! 😱");
-                                            }
-
-                                            tokio::spawn(async move {
-                                                tokio::time::sleep(Duration::from_millis(7)).await;
-                                                if let Some(topic) = client
-                                                    .announced_topics
-                                                    .lock()
-                                                    .await
-                                                    .get(&(id as i32))
-                                                {
-                                                    send_value_to_subscriber(
-                                                        client.clone(),
-                                                        topic,
-                                                        timestamp_micros,
-                                                        r#type,
-                                                        &data,
-                                                    )
-                                                    .await
-                                                }
-                                            });
-                                        }
-                                    } else {
-                                        // Invalid type id
-                                        cfg_tracing! {
-                                            tracing::error!("Server sent an invalid type id");
-                                        }
-                                    }
-                                }
-                            } else if id == -1 {
-                                // Timestamp update
-                                match client.handle_new_timestamp(timestamp_micros, data.as_i64()) {
-                                    Some(_) => {}
-                                    None => {
-                                        // Math failed, update most recent time
-                                        *client.start_time.lock() = Instant::now();
-                                        client.update_time().await.ok();
-                                        client
-                                            .handle_new_timestamp(timestamp_micros, data.as_i64());
-                                    }
-                                };
-                            } else {
-                                // Invalid id
-                                cfg_tracing! {
-                                    tracing::error!("Server sent an invalid topic id, less than -1");
-                                }
-                            };
-
-                            return;
-                        }
-
-                        return;
-                    }
-                }
-                _ => {
-                    cfg_tracing! {
-                        tracing::error!("Server sent an invalid msgpack data, not an array.");
                     }
                 }
             }
         }
         _ => {}
+    }
+}
+
+async fn handle_value(array: Vec<rmpv::Value>, client: Arc<InnerClient>) {
+    if array.len() != 4 {
+        cfg_tracing! {
+            tracing::error!("Server sent an invalid msgpack data, wrong length.");
+        }
+        return;
+    }
+
+    let id = array[0].as_i64().map(|n| n as i32);
+    let timestamp_micros = array[1].as_u64().map(|n| n as u32);
+    let type_idx = array[2].as_u64();
+    let data = &array[3];
+
+    if let Some(id) = id {
+        if let Some(timestamp_micros) = timestamp_micros {
+            if id >= 0 {
+                if let Some(type_idx) = type_idx {
+                    let r#type = Type::from_num(type_idx);
+                    if let Some(r#type) = r#type {
+                        if let Some(topic) = client.announced_topics.lock().await.get(&(id as i32))
+                        {
+                            cfg_tracing! {tracing::trace!("Received Value: {topic:?} {type:?} {data:?}");}
+                            send_value_to_subscriber(
+                                client.clone(),
+                                topic,
+                                timestamp_micros,
+                                r#type,
+                                data,
+                            )
+                            .await;
+                        } else {
+                            // Topic wasn't previously announced or hasn't been announced yet
+                            // Spawn a task to try and add it again
+                            // this shouldn't happen anymore, but for safety I'll keep it 😁
+                            let client = client.clone();
+                            let data = data.to_owned();
+
+                            cfg_tracing! {
+                                tracing::error!("Received a topic before it was announced! 😱");
+                            }
+
+                            tokio::spawn(async move {
+                                tokio::time::sleep(Duration::from_millis(7)).await;
+                                if let Some(topic) =
+                                    client.announced_topics.lock().await.get(&(id as i32))
+                                {
+                                    send_value_to_subscriber(
+                                        client.clone(),
+                                        topic,
+                                        timestamp_micros,
+                                        r#type,
+                                        &data,
+                                    )
+                                    .await
+                                }
+                            });
+                        }
+                    } else {
+                        // Invalid type id
+                        cfg_tracing! {
+                            tracing::error!("Server sent an invalid type id");
+                        }
+                    }
+                }
+            } else if id == -1 {
+                // Timestamp update
+                match client.handle_new_timestamp(timestamp_micros, data.as_i64()) {
+                    Some(_) => {}
+                    None => {
+                        // Math failed, update most recent time
+                        *client.start_time.lock() = Instant::now();
+                        client.update_time().await.ok();
+                        client.handle_new_timestamp(timestamp_micros, data.as_i64());
+                    }
+                };
+            } else {
+                // Invalid id
+                cfg_tracing! {
+                    tracing::error!("Server sent an invalid topic id, less than -1");
+                }
+            };
+
+            return;
+        }
+
+        return;
     }
 }
 
@@ -686,6 +680,7 @@ async fn setup_socket(
                     // unwrap should be fine because the "stream" never ends
                     match message.unwrap() {
                         Ok(message) => {
+                            cfg_tracing! {tracing::trace!("Received Message");}
                             handle_message(upgrade_client!(client), message).await;
                         },
                         Err(err) => handle_disconnect(Err::<(), _>(err), upgrade_client!(client), &mut socket).await?,
