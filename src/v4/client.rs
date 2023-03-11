@@ -14,11 +14,11 @@ use super::{
     PublishedTopic, SetProperties, Subscribe, Subscription, SubscriptionData, SubscriptionOptions,
     Topic, Type,
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, TryStreamExt};
 use tokio::{
     net::TcpStream,
     select,
-    sync::{mpsc, Mutex},
+    sync::{mpsc, Mutex}, task::yield_now,
 };
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, http::HeaderValue, Message};
 
@@ -189,7 +189,7 @@ impl Client {
             topics: HashSet::from_iter(topic_names.into_iter()),
         });
 
-        let (sender, receiver) = mpsc::channel::<MessageData>(100);
+        let (sender, receiver) = mpsc::channel::<MessageData>(256);
         self.inner.subscriptions.lock().await.insert(
             subuid,
             InternalSub {
@@ -614,8 +614,12 @@ async fn send_value_to_subscriber(
     r#type: Type,
     data: &rmpv::Value,
 ) {
+    // Allows sent values to be handled by subs, cause there hasnt been an await for a while
+    yield_now().await;
+
     client.subscriptions.lock().await.retain(|_, sub| {
         if !sub.is_valid() {
+            println!("invalid sub");
             false
         } else {
             if sub.matches_topic(topic) {
@@ -628,7 +632,7 @@ async fn send_value_to_subscriber(
                     })
                     .is_ok()
             } else {
-                false
+                true
             }
         }
     });
@@ -674,14 +678,14 @@ async fn setup_socket(
     tokio::spawn(async move {
         loop {
             let _: Result<(), crate::Error> = select! {
-                message = socket.next() => {
+                message = socket.try_next() => {
                     // Message from server
 
-                    // unwrap should be fine because the "stream" never ends
-                    match message.unwrap() {
+                    match message {
                         Ok(message) => {
                             cfg_tracing! {tracing::trace!("Received Message");}
-                            handle_message(upgrade_client!(client), message).await;
+                            // unwrap should be fine because the "stream" never ends and error is already handled
+                            handle_message(upgrade_client!(client), message.unwrap()).await;
                         },
                         Err(err) => handle_disconnect(Err::<(), _>(err), upgrade_client!(client), &mut socket).await?,
                     };

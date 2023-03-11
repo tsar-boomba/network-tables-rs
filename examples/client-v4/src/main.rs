@@ -5,11 +5,11 @@ use network_tables::v4::subscription::SubscriptionOptions;
 #[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
-        .with_env_filter("debug,network_tables=trace")
+        .with_env_filter("debug,network_tables=info")
         .init();
     let client = network_tables::v4::Client::try_new_w_config(
-        //SocketAddrV4::new(Ipv4Addr::new(10, 35, 6, 2), 5810),
-        SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 5810),
+        SocketAddrV4::new(Ipv4Addr::new(10, 35, 6, 2), 5810),
+        //SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 5810),
         network_tables::v4::client_config::Config {
             ..Default::default()
         },
