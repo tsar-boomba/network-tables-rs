@@ -18,7 +18,8 @@ use futures_util::{SinkExt, TryStreamExt};
 use tokio::{
     net::TcpStream,
     select,
-    sync::{mpsc, Mutex}, task::yield_now,
+    sync::{mpsc, Mutex},
+    task::yield_now,
 };
 use tokio_tungstenite::tungstenite::{client::IntoClientRequest, http::HeaderValue, Message};
 
