@@ -13,7 +13,9 @@ pub struct Config {
 
 impl Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Config").finish()
+        f.debug_struct("Config")
+            .field("connect_timeout", &self.connect_timeout)
+            .finish()
     }
 }
 

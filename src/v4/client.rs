@@ -21,7 +21,9 @@ use tokio::{
     sync::{mpsc, Mutex},
     task::yield_now,
 };
-use tokio_tungstenite::tungstenite::{client::IntoClientRequest, http::HeaderValue, Message};
+use tokio_tungstenite::tungstenite::{
+    client::IntoClientRequest, error::ProtocolError, http::HeaderValue, Message,
+};
 
 #[derive(Debug)]
 pub struct Client {
@@ -383,21 +385,18 @@ impl InnerClient {
             Vec::with_capacity(client_published.len() + subscriptions.len());
 
         // Add publish messages
-        client_published
-            .values()
-            .enumerate()
-            .for_each(|(i, topic)| {
-                messages[i] = NTMessage::Publish(PublishTopic {
-                    name: &topic.name,
-                    properties: Cow::Borrowed(&topic.properties),
-                    // Client published is guaranteed to have a uid
-                    pubuid: topic.pubuid,
-                    r#type: topic.r#type,
-                });
-            });
+        for topic in client_published.values() {
+            messages.push(NTMessage::Publish(PublishTopic {
+                name: &topic.name,
+                properties: Cow::Borrowed(&topic.properties),
+                // Client published is guaranteed to have a uid
+                pubuid: topic.pubuid,
+                r#type: topic.r#type,
+            }));
+        }
 
         // Remove invalid subs (user has dropped them)
-        subscriptions.retain(|_, sub| !sub.is_valid());
+        subscriptions.retain(|_, sub| sub.is_valid());
 
         // Add subscribe messages
         messages.extend(subscriptions.values().filter_map(|sub| {
@@ -688,7 +687,7 @@ async fn setup_socket(
                             // unwrap should be fine because the "stream" never ends and error is already handled
                             handle_message(upgrade_client!(client), message.unwrap()).await;
                         },
-                        Err(err) => handle_disconnect(Err::<(), _>(err), upgrade_client!(client), &mut socket).await?,
+                        Err(err) => handle_disconnect(Err::<(), _>(err), upgrade_client!(client), &mut socket).await.unwrap(),
                     };
 
                     Ok(())
@@ -700,7 +699,7 @@ async fn setup_socket(
                             socket.send(message).await,
                             upgrade_client!(client),
                             &mut socket
-                        ).await?;
+                        ).await.unwrap();
                     } else {
                         // Other side of channel was dropped, end task
                         break;
@@ -711,6 +710,7 @@ async fn setup_socket(
             };
         }
 
+        tracing::error!("Handle Socket task end 😱");
         Ok::<(), crate::Error>(())
     });
 
@@ -722,51 +722,60 @@ async fn handle_disconnect<T>(
     client: Arc<InnerClient>,
     socket: &mut WebSocket,
 ) -> Result<(), tokio_tungstenite::tungstenite::Error> {
+    // Reuse for dif branches
+    let reconnect = move || async move {
+        cfg_tracing! {
+            tracing::info!("Disconnected from server, attempting to reconnect.");
+        }
+        (client.config.on_disconnect)();
+        loop {
+            tokio::time::sleep(Duration::from_millis(client.config.connect_timeout)).await;
+
+            let mut request = format!("ws://{}/nt/rust-client", client.server_addr)
+                .into_client_request()
+                .unwrap();
+            // Add sub-protocol header
+            request.headers_mut().append(
+                "Sec-WebSocket-Protocol",
+                HeaderValue::from_static("networktables.first.wpi.edu"),
+            );
+
+            match tokio::time::timeout(
+                Duration::from_millis(client.config.connect_timeout),
+                tokio_tungstenite::connect_async(request),
+            )
+            .await
+            {
+                Ok(connect_result) => match connect_result {
+                    Ok((new_socket, _)) => {
+                        *socket = new_socket;
+                        client.on_open().await;
+                        (client.config.on_reconnect)();
+
+                        cfg_tracing! {
+                            tracing::info!("Successfully reestablished connection.");
+                        }
+
+                        break Ok(());
+                    }
+                    Err(_) => {}
+                },
+                Err(_) => {}
+            }
+        }
+    };
+
     match result {
         Ok(_) => Ok(()),
         Err(err) => match err {
             tokio_tungstenite::tungstenite::Error::AlreadyClosed
-            | tokio_tungstenite::tungstenite::Error::ConnectionClosed => {
-                cfg_tracing! {
-                    tracing::info!("Disconnected from server, attempting to reconnect.");
+            | tokio_tungstenite::tungstenite::Error::ConnectionClosed => reconnect().await,
+            tokio_tungstenite::tungstenite::Error::Protocol(protocol_err) => match protocol_err {
+                ProtocolError::SendAfterClosing | ProtocolError::ResetWithoutClosingHandshake => {
+                    reconnect().await
                 }
-                (client.config.on_disconnect)();
-                loop {
-                    tokio::time::sleep(Duration::from_millis(client.config.connect_timeout)).await;
-
-                    let mut request = format!("ws://{}/nt/rust-client", client.server_addr)
-                        .into_client_request()
-                        .unwrap();
-                    // Add sub-protocol header
-                    request.headers_mut().append(
-                        "Sec-WebSocket-Protocol",
-                        HeaderValue::from_static("networktables.first.wpi.edu"),
-                    );
-
-                    match tokio::time::timeout(
-                        Duration::from_millis(client.config.connect_timeout),
-                        tokio_tungstenite::connect_async(request),
-                    )
-                    .await
-                    {
-                        Ok(connect_result) => match connect_result {
-                            Ok((new_socket, _)) => {
-                                *socket = new_socket;
-                                client.on_open().await;
-                                (client.config.on_reconnect)();
-
-                                cfg_tracing! {
-                                    tracing::info!("Successfully reestablished connection.");
-                                }
-
-                                break Ok(());
-                            }
-                            Err(_) => {}
-                        },
-                        Err(_) => {}
-                    }
-                }
-            }
+                _ => Err(protocol_err.into()),
+            },
             _ => Err(err),
         },
     }
