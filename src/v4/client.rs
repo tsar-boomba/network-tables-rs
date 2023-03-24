@@ -456,7 +456,7 @@ async fn handle_message(client: Arc<InnerClient>, message: Message) {
                         let mut announced = client.announced_topics.lock().await;
 
                         cfg_tracing! {
-                            tracing::info!("Server announced: {name}");
+                            tracing::debug!("Server announced: {name}");
                         }
 
                         if let Some(existing) = announced.get_mut(&id) {
@@ -482,7 +482,7 @@ async fn handle_message(client: Arc<InnerClient>, message: Message) {
                     }
                     NTMessage::UnAnnounce(un_announce) => {
                         cfg_tracing! {
-                            tracing::info!("Server un_announced: {}", un_announce.name);
+                            tracing::debug!("Server un_announced: {}", un_announce.name);
                         }
 
                         let removed = client.announced_topics.lock().await.remove(&un_announce.id);
@@ -727,13 +727,19 @@ async fn handle_disconnect<T>(
         cfg_tracing! {
             tracing::info!("Disconnected from server, attempting to reconnect.");
         }
+
         (client.config.on_disconnect)();
+
         loop {
             tokio::time::sleep(Duration::from_millis(client.config.connect_timeout)).await;
 
-            let mut request = format!("ws://{}/nt/rust-client", client.server_addr)
-                .into_client_request()
-                .unwrap();
+            let mut request = format!(
+                "ws://{}/nt/rust-client-{}",
+                client.server_addr,
+                rand::random::<u32>()
+            )
+            .into_client_request()
+            .unwrap();
             // Add sub-protocol header
             request.headers_mut().append(
                 "Sec-WebSocket-Protocol",
