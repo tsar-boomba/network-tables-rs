@@ -4,7 +4,7 @@ use std::{
     net::SocketAddr,
     ops::Div,
     sync::{Arc, Weak},
-    time::{Duration, Instant},
+    time::{Duration, Instant}, io,
 };
 
 use crate::log_result;
@@ -782,6 +782,10 @@ async fn handle_disconnect<T>(
                 }
                 _ => Err(protocol_err.into()),
             },
+            tokio_tungstenite::tungstenite::Error::Io(err) => match err.kind() {
+                io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted => reconnect().await,
+                _ => Err(err.into())
+            }
             _ => Err(err),
         },
     }
