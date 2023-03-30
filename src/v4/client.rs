@@ -19,7 +19,7 @@ use futures_util::{SinkExt, TryStreamExt};
 use tokio::{
     net::TcpStream,
     select,
-    sync::{mpsc, Mutex},
+    sync::{mpsc, oneshot, Mutex},
     task::yield_now,
 };
 use tokio_tungstenite::tungstenite::{
@@ -41,6 +41,7 @@ struct InnerClient {
     announced_topics: Mutex<HashMap<i32, Topic>>,
     client_published_topics: Mutex<HashMap<u32, PublishedTopic>>,
     socket_sender: mpsc::Sender<Message>,
+    socket_panic_receiver: parking_lot::Mutex<oneshot::Receiver<crate::Error>>,
     server_time_offset: parking_lot::Mutex<u32>,
     sub_counter: parking_lot::Mutex<i32>,
     topic_counter: parking_lot::Mutex<u32>,
@@ -55,19 +56,21 @@ impl Client {
         config: Config,
     ) -> Result<Self, crate::Error> {
         let (socket_sender, socket_receiver) = mpsc::channel::<Message>(100);
+        let (panic_sender, panic_recv) = oneshot::channel::<crate::Error>();
         let inner = Arc::new(InnerClient {
             server_addr: server_addr.into(),
             subscriptions: Mutex::new(HashMap::new()),
             announced_topics: Mutex::new(HashMap::new()),
             client_published_topics: Mutex::new(HashMap::new()),
             socket_sender,
+            socket_panic_receiver: parking_lot::Mutex::new(panic_recv),
             server_time_offset: parking_lot::Mutex::new(0),
             sub_counter: parking_lot::Mutex::new(0),
             topic_counter: parking_lot::Mutex::new(0),
             start_time: parking_lot::Mutex::new(Instant::now()),
             config,
         });
-        setup_socket(Arc::downgrade(&inner), socket_receiver).await?;
+        setup_socket(Arc::downgrade(&inner), socket_receiver, panic_sender).await?;
 
         inner.on_open().await;
 
@@ -132,7 +135,7 @@ impl Client {
         // Put message in an array and serialize
         let message = serde_json::to_string(&messages)?;
 
-        self.inner.send_message(Message::Text(message)).await;
+        self.inner.send_message(Message::Text(message)).await?;
 
         let topic = PublishedTopic {
             name: name.as_ref().to_owned(),
@@ -154,7 +157,7 @@ impl Client {
         // Put message in an array and serialize
         let message = serde_json::to_string(&[topic.as_unpublish()])?;
 
-        self.inner.send_message(Message::Text(message)).await;
+        self.inner.send_message(Message::Text(message)).await?;
 
         Ok(())
     }
@@ -185,7 +188,7 @@ impl Client {
             options: options.clone(),
         })])?;
 
-        self.inner.send_message(Message::Text(message)).await;
+        self.inner.send_message(Message::Text(message)).await?;
 
         let data = Arc::new(SubscriptionData {
             options: options,
@@ -208,7 +211,7 @@ impl Client {
     pub async fn unsubscribe(&self, sub: Subscription) -> Result<(), crate::Error> {
         // Put message in an array and serialize
         let message = serde_json::to_string(&[sub.as_unsubscribe()])?;
-        self.inner.send_message(Message::Text(message)).await;
+        self.inner.send_message(Message::Text(message)).await?;
 
         // Remove from our subscriptions
         self.inner
@@ -257,14 +260,24 @@ impl Client {
 }
 
 impl InnerClient {
-    /// Sends message in websocket, handling reconnection if necessary
-    pub(crate) async fn send_message(&self, message: Message) {
+    /// Returns err if the socket task has ended
+    fn check_task_panic(&self) -> Result<(), crate::Error> {
+        match self.socket_panic_receiver.lock().try_recv() {
+            Ok(err) => Err(err),
+            Err(_) => Ok(()),
+        }
+    }
+
+    /// Sends message to websocket task, which handles reconnection if necessary
+    pub(crate) async fn send_message(&self, message: Message) -> Result<(), crate::Error> {
+        self.check_task_panic()?;
         cfg_tracing! {
             tracing::trace!("Sending message: {message:?}");
         }
 
         // Should never be dropped before a send goes off
         self.socket_sender.send(message).await.unwrap();
+        Ok(())
     }
 
     #[inline]
@@ -329,7 +342,7 @@ impl InnerClient {
         rmp::encode::write_u32(&mut buf, r#type.as_u8() as u32).unwrap();
         rmpv::encode::write_value(&mut buf, value).unwrap();
 
-        Ok(self.send_message(Message::Binary(buf)).await)
+        Ok(self.send_message(Message::Binary(buf)).await?)
     }
 
     /// Value should match topic type
@@ -414,7 +427,8 @@ impl InnerClient {
 
         // Send all messages at once (please don't fail 🥺)
         self.send_message(Message::Text(serde_json::to_string(&messages).unwrap()))
-            .await;
+            .await
+            .ok();
 
         cfg_tracing! {
             tracing::info!("Prepared new connection.");
@@ -550,31 +564,9 @@ async fn handle_value(array: Vec<rmpv::Value>, client: Arc<InnerClient>) {
                             )
                             .await;
                         } else {
-                            // Topic wasn't previously announced or hasn't been announced yet
-                            // Spawn a task to try and add it again
-                            // this shouldn't happen anymore, but for safety I'll keep it 😁
-                            let client = client.clone();
-                            let data = data.to_owned();
-
                             cfg_tracing! {
                                 tracing::error!("Received a topic before it was announced! 😱");
                             }
-
-                            tokio::spawn(async move {
-                                tokio::time::sleep(Duration::from_millis(7)).await;
-                                if let Some(topic) =
-                                    client.announced_topics.lock().await.get(&(id as i32))
-                                {
-                                    send_value_to_subscriber(
-                                        client.clone(),
-                                        topic,
-                                        timestamp_micros,
-                                        r#type,
-                                        &data,
-                                    )
-                                    .await
-                                }
-                            });
                         }
                     } else {
                         // Invalid type id
@@ -652,6 +644,7 @@ macro_rules! upgrade_client {
 async fn setup_socket(
     client: Weak<InnerClient>,
     mut receiver: mpsc::Receiver<Message>,
+    panic_sender: oneshot::Sender<crate::Error>,
 ) -> Result<(), crate::Error> {
     let mut request = format!(
         "ws://{}/nt/rust-client-{}",
@@ -678,20 +671,22 @@ async fn setup_socket(
 
     tokio::spawn(async move {
         loop {
-            let _: Result<(), crate::Error> = select! {
+            let err: Result<(), crate::Error> = select! {
                 message = socket.try_next() => {
                     // Message from server
 
                     match message {
-                        Ok(message) => {
-                            cfg_tracing! {tracing::trace!("Received Message");}
-                            // unwrap should be fine because the "stream" never ends and error is already handled
-                            handle_message(upgrade_client!(client), message.unwrap()).await;
+                        Ok(Some(message)) => {
+                            cfg_tracing! {tracing::trace!("Received Message: {:?}", message);}
+                            handle_message(upgrade_client!(client), message).await;
+                            Ok(())
                         },
-                        Err(err) => handle_disconnect(Err::<(), _>(err), upgrade_client!(client), &mut socket).await.unwrap(),
-                    };
-
-                    Ok(())
+                        Ok(None) => {
+                            // If this happens we likely just need to reconnect
+                            handle_disconnect(Err::<(), _>(tokio_tungstenite::tungstenite::Error::AlreadyClosed), upgrade_client!(client), &mut socket).await.map_err(Into::into)
+                        },
+                        Err(err) => handle_disconnect(Err::<(), _>(err), upgrade_client!(client), &mut socket).await.map_err(Into::into),
+                    }
                 },
                 message = receiver.recv() => {
                     // Message from client
@@ -700,19 +695,20 @@ async fn setup_socket(
                             socket.send(message).await,
                             upgrade_client!(client),
                             &mut socket
-                        ).await.unwrap();
+                        ).await.map_err(Into::into)
                     } else {
                         // Other side of channel was dropped, end task
+                        cfg_tracing!{tracing::info!("Client dropped, ending socket handle task.");}
                         break;
                     }
-
-                    Ok(())
                 },
             };
-        }
 
-        tracing::error!("Handle Socket task end 😱");
-        Ok::<(), crate::Error>(())
+            if let Err(err) = err {
+                panic_sender.send(err).ok();
+                break;
+            }
+        }
     });
 
     Ok(())

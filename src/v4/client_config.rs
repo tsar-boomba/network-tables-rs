@@ -22,7 +22,7 @@ impl Debug for Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            connect_timeout: 100,
+            connect_timeout: 1000,
             on_announce: Box::new(|_| {}),
             on_un_announce: Box::new(|_| {}),
             on_disconnect: Box::new(|| {}),
