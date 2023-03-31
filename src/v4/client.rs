@@ -744,8 +744,7 @@ async fn handle_disconnect<T>(
 
             let mut request = format!(
                 "ws://{}/nt/rust-client-{}",
-                reconnect_client.server_addr,
-                reconnect_client.id
+                reconnect_client.server_addr, reconnect_client.id
             )
             .into_client_request()
             .unwrap();
