@@ -64,9 +64,6 @@ impl Client {
                 if now.duration_since(last_time_update).as_secs() >= TIMESTAMP_INTERVAL {
                     last_time_update = now;
                 }
-
-                let mut socket = handle_task_client.socket.lock().await;
-                // unwrap should be okay since this "Stream" never ends
             }
         });
 

@@ -1,7 +1,6 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet, VecDeque},
-    io,
     net::SocketAddr,
     ops::Div,
     sync::{Arc, Weak},
@@ -22,9 +21,7 @@ use tokio::{
     sync::{mpsc, oneshot, Mutex},
     task::yield_now,
 };
-use tokio_tungstenite::tungstenite::{
-    client::IntoClientRequest, error::ProtocolError, http::HeaderValue, Message,
-};
+use tokio_tungstenite::tungstenite::{client::IntoClientRequest, http::HeaderValue, Message};
 
 #[derive(Debug)]
 pub struct Client {
@@ -48,6 +45,7 @@ struct InnerClient {
     config: Config,
     // Has to be mutable to prevent overflow if it becomes too long ago
     start_time: parking_lot::Mutex<Instant>,
+    id: u32,
 }
 
 impl Client {
@@ -69,6 +67,7 @@ impl Client {
             topic_counter: parking_lot::Mutex::new(0),
             start_time: parking_lot::Mutex::new(Instant::now()),
             config,
+            id: rand::random(),
         });
         setup_socket(Arc::downgrade(&inner), socket_receiver, panic_sender).await?;
 
@@ -332,6 +331,7 @@ impl InnerClient {
         timestamp: u32,
         value: &rmpv::Value,
     ) -> Result<(), crate::Error> {
+        self.check_task_panic()?;
         let mut buf = Vec::<u8>::with_capacity(19);
 
         // TODO: too lazy to handle these errors 😴
@@ -354,6 +354,11 @@ impl InnerClient {
     ) -> Result<(), crate::Error> {
         self.publish_value_w_timestamp(id, r#type, self.server_time(), value)
             .await
+    }
+
+    fn reset_time(&self) {
+        *self.server_time_offset.lock() = 0;
+        *self.start_time.lock() = Instant::now();
     }
 
     pub(crate) async fn update_time(&self) -> Result<(), crate::Error> {
@@ -383,6 +388,7 @@ impl InnerClient {
         let mut announced = self.announced_topics.lock().await;
         let client_published = self.client_published_topics.lock().await;
         let mut subscriptions = self.subscriptions.lock().await;
+        announced.clear();
         announced.insert(
             -1,
             Topic {
@@ -425,7 +431,10 @@ impl InnerClient {
             None
         }));
 
-        // Send all messages at once (please don't fail 🥺)
+        // Reset our time stuff & send all messages at once (please don't fail 🥺)
+        self.reset_time();
+        drop(announced);
+        self.update_time().await.ok();
         self.send_message(Message::Text(serde_json::to_string(&messages).unwrap()))
             .await
             .ok();
@@ -493,7 +502,7 @@ async fn handle_message(client: Arc<InnerClient>, message: Message) {
                         }
 
                         // Call user provided on announce fn
-                        (client.config.on_announce)(announced.get(&id).unwrap());
+                        (client.config.on_announce)(announced.get(&id).unwrap()).await;
                     }
                     NTMessage::UnAnnounce(un_announce) => {
                         cfg_tracing! {
@@ -501,7 +510,7 @@ async fn handle_message(client: Arc<InnerClient>, message: Message) {
                         }
 
                         let removed = client.announced_topics.lock().await.remove(&un_announce.id);
-                        (client.config.on_un_announce)(removed);
+                        (client.config.on_un_announce)(removed).await;
                     }
                     NTMessage::Properties(_) => {
                         // I don't need to do anything
@@ -552,8 +561,7 @@ async fn handle_value(array: Vec<rmpv::Value>, client: Arc<InnerClient>) {
                 if let Some(type_idx) = type_idx {
                     let r#type = Type::from_num(type_idx);
                     if let Some(r#type) = r#type {
-                        if let Some(topic) = client.announced_topics.lock().await.get(&(id as i32))
-                        {
+                        if let Some(topic) = client.announced_topics.lock().await.get(&id) {
                             cfg_tracing! {tracing::trace!("Received Value: {topic:?} {type:?} {data:?}");}
                             send_value_to_subscriber(
                                 client.clone(),
@@ -649,7 +657,7 @@ async fn setup_socket(
     let mut request = format!(
         "ws://{}/nt/rust-client-{}",
         client.upgrade().unwrap().server_addr,
-        rand::random::<u32>()
+        client.upgrade().unwrap().id,
     )
     .into_client_request()?;
     // Add sub-protocol header
@@ -720,20 +728,24 @@ async fn handle_disconnect<T>(
     socket: &mut WebSocket,
 ) -> Result<(), tokio_tungstenite::tungstenite::Error> {
     // Reuse for dif branches
+    let reconnect_client = client.clone();
     let reconnect = move || async move {
         cfg_tracing! {
             tracing::info!("Disconnected from server, attempting to reconnect.");
         }
 
-        (client.config.on_disconnect)();
+        (reconnect_client.config.on_disconnect)().await;
 
         loop {
-            tokio::time::sleep(Duration::from_millis(client.config.connect_timeout)).await;
+            tokio::time::sleep(Duration::from_millis(
+                reconnect_client.config.disconnect_retry_interval,
+            ))
+            .await;
 
             let mut request = format!(
                 "ws://{}/nt/rust-client-{}",
-                client.server_addr,
-                rand::random::<u32>()
+                reconnect_client.server_addr,
+                reconnect_client.id
             )
             .into_client_request()
             .unwrap();
@@ -744,7 +756,7 @@ async fn handle_disconnect<T>(
             );
 
             match tokio::time::timeout(
-                Duration::from_millis(client.config.connect_timeout),
+                Duration::from_millis(reconnect_client.config.connect_timeout),
                 tokio_tungstenite::connect_async(request),
             )
             .await
@@ -752,8 +764,8 @@ async fn handle_disconnect<T>(
                 Ok(connect_result) => match connect_result {
                     Ok((new_socket, _)) => {
                         *socket = new_socket;
-                        client.on_open().await;
-                        (client.config.on_reconnect)();
+                        reconnect_client.on_open().await;
+                        (reconnect_client.config.on_reconnect)().await;
 
                         cfg_tracing! {
                             tracing::info!("Successfully reestablished connection.");
@@ -770,23 +782,13 @@ async fn handle_disconnect<T>(
 
     match result {
         Ok(_) => Ok(()),
-        Err(err) => match err {
-            tokio_tungstenite::tungstenite::Error::AlreadyClosed
-            | tokio_tungstenite::tungstenite::Error::ConnectionClosed => reconnect().await,
-            tokio_tungstenite::tungstenite::Error::Protocol(protocol_err) => match protocol_err {
-                ProtocolError::SendAfterClosing | ProtocolError::ResetWithoutClosingHandshake => {
-                    reconnect().await
-                }
-                _ => Err(protocol_err.into()),
-            },
-            tokio_tungstenite::tungstenite::Error::Io(err) => match err.kind() {
-                io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted => {
-                    reconnect().await
-                }
-                _ => Err(err.into()),
-            },
-            _ => Err(err),
-        },
+        Err(err) => {
+            if (client.config.should_reconnect)(&err) {
+                reconnect().await
+            } else {
+                Err(err)
+            }
+        }
     }
 }
 

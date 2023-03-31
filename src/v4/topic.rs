@@ -26,18 +26,18 @@ pub struct Topic {
     pub properties: Option<PublishProperties>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub struct PublishProperties {
     /// If true, the last set value will be periodically saved to persistent storage on the server and be restored during server startup.
     /// Topics with this property set to true will not be deleted by the server when the last publisher stops publishing.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) persistent: Option<bool>,
+    pub persistent: Option<bool>,
     /// Topics with this property set to true will not be deleted by the server when the last publisher stops publishing.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) retained: Option<bool>,
+    pub retained: Option<bool>,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
-    pub(crate) rest: Option<HashMap<String, serde_json::Value>>,
+    pub rest: Option<HashMap<String, serde_json::Value>>,
 }
 
 impl PublishedTopic {

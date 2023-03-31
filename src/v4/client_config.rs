@@ -1,14 +1,20 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, io};
+
+use futures_util::future::BoxFuture;
+use tokio_tungstenite::tungstenite::error::ProtocolError;
 
 use super::Topic;
 
 pub struct Config {
-    /// Milliseconds
+    /// milliseconds
     pub connect_timeout: u64,
-    pub on_announce: Box<dyn Fn(&Topic) + Send + Sync>,
-    pub on_un_announce: Box<dyn Fn(Option<Topic>) + Send + Sync>,
-    pub on_disconnect: Box<dyn Fn() + Send + Sync>,
-    pub on_reconnect: Box<dyn Fn() + Send + Sync>,
+    /// milliseconds
+    pub disconnect_retry_interval: u64,
+    pub should_reconnect: Box<dyn Fn(&tokio_tungstenite::tungstenite::Error) -> bool + Send + Sync>,
+    pub on_announce: Box<dyn Fn(&Topic) -> BoxFuture<()> + Send + Sync>,
+    pub on_un_announce: Box<dyn Fn(Option<Topic>) -> BoxFuture<'static, ()> + Send + Sync>,
+    pub on_disconnect: Box<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>,
+    pub on_reconnect: Box<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>,
 }
 
 impl Debug for Config {
@@ -22,11 +28,29 @@ impl Debug for Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            connect_timeout: 1000,
-            on_announce: Box::new(|_| {}),
-            on_un_announce: Box::new(|_| {}),
-            on_disconnect: Box::new(|| {}),
-            on_reconnect: Box::new(|| {}),
+            connect_timeout: 500,
+            disconnect_retry_interval: 1000,
+            should_reconnect: Box::new(default_should_reconnect),
+            on_announce: Box::new(|_| Box::pin(async {})),
+            on_un_announce: Box::new(|_| Box::pin(async {})),
+            on_disconnect: Box::new(|| Box::pin(async {})),
+            on_reconnect: Box::new(|| Box::pin(async {})),
         }
+    }
+}
+
+pub fn default_should_reconnect(err: &tokio_tungstenite::tungstenite::Error) -> bool {
+    match err {
+        tokio_tungstenite::tungstenite::Error::AlreadyClosed
+        | tokio_tungstenite::tungstenite::Error::ConnectionClosed => true,
+        tokio_tungstenite::tungstenite::Error::Protocol(protocol_err) => match protocol_err {
+            ProtocolError::SendAfterClosing | ProtocolError::ResetWithoutClosingHandshake => true,
+            _ => false,
+        },
+        tokio_tungstenite::tungstenite::Error::Io(err) => match err.kind() {
+            io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted => true,
+            _ => false,
+        },
+        _ => true,
     }
 }
