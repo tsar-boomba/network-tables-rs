@@ -730,12 +730,11 @@ async fn handle_disconnect<T>(
     // Reuse for dif branches
     let reconnect_client = client.clone();
 
-    (reconnect_client.config.on_disconnect)().await;
-
     let reconnect = move || async move {
         cfg_tracing! {
             tracing::info!("Disconnected from server, attempting to reconnect.");
         }
+        (reconnect_client.config.on_disconnect)().await;
 
         loop {
             tokio::time::sleep(Duration::from_millis(

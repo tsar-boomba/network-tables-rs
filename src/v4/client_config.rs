@@ -13,6 +13,7 @@ pub struct Config {
     pub should_reconnect: Box<dyn Fn(&tokio_tungstenite::tungstenite::Error) -> bool + Send + Sync>,
     pub on_announce: Box<dyn Fn(&Topic) -> BoxFuture<()> + Send + Sync>,
     pub on_un_announce: Box<dyn Fn(Option<Topic>) -> BoxFuture<'static, ()> + Send + Sync>,
+    /// Called when there is an error with the websocket and `should_reconnect` returns true
     pub on_disconnect: Box<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>,
     pub on_reconnect: Box<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>,
 }
