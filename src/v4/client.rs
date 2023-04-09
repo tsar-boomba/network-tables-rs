@@ -785,6 +785,7 @@ async fn handle_disconnect<T>(
             if (client.config.should_reconnect)(&err) {
                 reconnect().await
             } else {
+                cfg_tracing!{tracing::error!("Handle socket dying on {err:?}");}
                 Err(err)
             }
         }

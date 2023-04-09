@@ -49,7 +49,7 @@ pub fn default_should_reconnect(err: &tokio_tungstenite::tungstenite::Error) -> 
             _ => false,
         },
         tokio_tungstenite::tungstenite::Error::Io(err) => match err.kind() {
-            io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted => true,
+            io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted | io::ErrorKind::TimedOut => true,
             _ => false,
         },
         _ => true,
