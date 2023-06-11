@@ -46,15 +46,18 @@ struct InnerClient {
     // Has to be mutable to prevent overflow if it becomes too long ago
     start_time: parking_lot::Mutex<Instant>,
     id: u32,
+    identity: &'static str,
 }
 
 impl Client {
     pub async fn try_new_w_config(
         server_addr: impl Into<SocketAddr>,
         config: Config,
+        identity: Option<&'static str>,
     ) -> Result<Self, crate::Error> {
         let (socket_sender, socket_receiver) = mpsc::channel::<Message>(100);
         let (panic_sender, panic_recv) = oneshot::channel::<crate::Error>();
+        let id = rand::random();
         let inner = Arc::new(InnerClient {
             server_addr: server_addr.into(),
             subscriptions: Mutex::new(HashMap::new()),
@@ -67,7 +70,8 @@ impl Client {
             topic_counter: parking_lot::Mutex::new(0),
             start_time: parking_lot::Mutex::new(Instant::now()),
             config,
-            id: rand::random(),
+            id,
+            identity: identity.unwrap_or_else(|| "rust")
         });
         setup_socket(Arc::downgrade(&inner), socket_receiver, panic_sender).await?;
 
@@ -90,16 +94,16 @@ impl Client {
         Ok(Self { inner })
     }
 
-    pub async fn try_new(server_addr: impl Into<SocketAddr>) -> Result<Self, crate::Error> {
-        Self::try_new_w_config(server_addr, Config::default()).await
+    pub async fn try_new(server_addr: impl Into<SocketAddr>, identity: Option<&'static str>) -> Result<Self, crate::Error> {
+        Self::try_new_w_config(server_addr, Config::default(), identity).await
     }
 
-    pub async fn new_w_config(server_addr: impl Into<SocketAddr>, config: Config) -> Self {
-        Self::try_new_w_config(server_addr, config).await.unwrap()
+    pub async fn new_w_config(server_addr: impl Into<SocketAddr>, config: Config, identity: Option<&'static str>) -> Self {
+        Self::try_new_w_config(server_addr, config, identity).await.unwrap()
     }
 
-    pub async fn new(server_addr: impl Into<SocketAddr>) -> Self {
-        Self::new_w_config(server_addr, Config::default()).await
+    pub async fn new(server_addr: impl Into<SocketAddr>, identity: Option<&'static str>) -> Self {
+        Self::new_w_config(server_addr, Config::default(), identity).await
     }
 
     pub fn server_addr(&self) -> SocketAddr {
@@ -655,9 +659,10 @@ async fn setup_socket(
     panic_sender: oneshot::Sender<crate::Error>,
 ) -> Result<(), crate::Error> {
     let mut request = format!(
-        "ws://{}/nt/rust-client-{}",
+        "ws://{}/nt/{}-{}",
         client.upgrade().unwrap().server_addr,
-        client.upgrade().unwrap().id,
+        client.upgrade().unwrap().identity,
+        client.upgrade().unwrap().id
     )
     .into_client_request()?;
     // Add sub-protocol header
@@ -743,8 +748,8 @@ async fn handle_disconnect<T>(
             .await;
 
             let mut request = format!(
-                "ws://{}/nt/rust-client-{}",
-                reconnect_client.server_addr, reconnect_client.id
+                "ws://{}/nt/{}-{}",
+                reconnect_client.server_addr, reconnect_client.identity, reconnect_client.id
             )
             .into_client_request()
             .unwrap();
