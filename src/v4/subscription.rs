@@ -43,7 +43,7 @@ pub struct Subscription {
 #[serde(rename_all = "lowercase")]
 pub struct SubscriptionOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub periodic: Option<i32>,
+    pub periodic: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub all: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
