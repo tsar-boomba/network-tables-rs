@@ -46,14 +46,14 @@ struct InnerClient {
     // Has to be mutable to prevent overflow if it becomes too long ago
     start_time: parking_lot::Mutex<Instant>,
     id: u32,
-    identity: String,
+    identity: &'static str,
 }
 
 impl Client {
     pub async fn try_new_w_config(
         server_addr: impl Into<SocketAddr>,
         config: Config,
-        identity: Option<String>,
+        identity: Option<&'static str>,
     ) -> Result<Self, crate::Error> {
         let (socket_sender, socket_receiver) = mpsc::channel::<Message>(100);
         let (panic_sender, panic_recv) = oneshot::channel::<crate::Error>();
@@ -71,7 +71,7 @@ impl Client {
             start_time: parking_lot::Mutex::new(Instant::now()),
             config,
             id,
-            identity: identity.unwrap_or_else(|| format!("rust-client"))
+            identity: identity.unwrap_or_else(|| "rust")
         });
         setup_socket(Arc::downgrade(&inner), socket_receiver, panic_sender).await?;
 
@@ -94,15 +94,15 @@ impl Client {
         Ok(Self { inner })
     }
 
-    pub async fn try_new(server_addr: impl Into<SocketAddr>, identity: Option<String>) -> Result<Self, crate::Error> {
+    pub async fn try_new(server_addr: impl Into<SocketAddr>, identity: Option<&'static str>) -> Result<Self, crate::Error> {
         Self::try_new_w_config(server_addr, Config::default(), identity).await
     }
 
-    pub async fn new_w_config(server_addr: impl Into<SocketAddr>, config: Config, identity: Option<String>) -> Self {
+    pub async fn new_w_config(server_addr: impl Into<SocketAddr>, config: Config, identity: Option<&'static str>) -> Self {
         Self::try_new_w_config(server_addr, config, identity).await.unwrap()
     }
 
-    pub async fn new(server_addr: impl Into<SocketAddr>, identity: Option<String>) -> Self {
+    pub async fn new(server_addr: impl Into<SocketAddr>, identity: Option<&'static str>) -> Self {
         Self::new_w_config(server_addr, Config::default(), identity).await
     }
 
